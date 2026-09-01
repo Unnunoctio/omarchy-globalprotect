@@ -1,0 +1,494 @@
+#!/usr/bin/env bash
+# gpvpn - cliente GlobalProtect para la barra de Omarchy.
+#
+# Separa el login SAML del tunel: gp-saml-gui corre como el usuario y deja el
+# cookie en $XDG_RUNTIME_DIR; openconnect corre como root dentro de la unidad
+# systemd gpvpn@<uid>, que una regla polkit deja arrancar y parar sin password.
+# Asi conectar y desconectar son acciones independientes y consultables, que es
+# lo que un widget necesita.
+#
+# Un solo tunel a la vez, igual que el cliente oficial.
+
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/gpvpn"
+PROFILES="$CONFIG_DIR/profiles.json"
+
+UID_SELF="$(id -u)"
+UNIT="gpvpn@${UID_SELF}.service"
+RUNDIR="${XDG_RUNTIME_DIR:-/run/user/${UID_SELF}}/gpvpn"
+PARAMS="$RUNDIR/params"
+ACTIVE_FILE="$RUNDIR/active"
+AUTH_MARKER="$RUNDIR/authenticating"
+ERROR_FILE="$RUNDIR/last-error"
+
+DEFAULT_IFACE="gpvpn0"
+
+die() { printf 'gpvpn: %s\n' "$*" >&2; exit 1; }
+
+# --- perfiles ------------------------------------------------------------
+
+ensure_profiles() {
+  if [[ ! -f $PROFILES ]]; then
+    mkdir -p "$CONFIG_DIR"
+    printf '{\n  "version": 1,\n  "defaultProfile": null,\n  "profiles": []\n}\n' > "$PROFILES"
+  fi
+}
+
+profiles_json() { ensure_profiles; cat "$PROFILES"; }
+
+profile_get() {
+  profiles_json | jq -e --arg id "$1" '.profiles[] | select(.id == $id)'
+}
+
+profile_ids() { profiles_json | jq -r '.profiles[].id'; }
+
+default_profile_id() {
+  local id
+  id="$(profiles_json | jq -r '.defaultProfile // empty')"
+  if [[ -n $id ]]; then
+    printf '%s' "$id"
+    return
+  fi
+  # Sin default explicito manda el primero: con un solo perfil declarado, pedir
+  # el id en cada comando seria puro ruido.
+  profiles_json | jq -r '.profiles[0].id // empty'
+}
+
+resolve_profile() {
+  local id="${1-}"
+  if [[ -z $id ]]; then
+    id="$(default_profile_id)"
+    [[ -n $id ]] || die "no hay perfiles; crea uno con: gpvpn profile add --help"
+  fi
+  profile_get "$id" >/dev/null 2>&1 || die "no existe el perfil '$id'"
+  printf '%s' "$id"
+}
+
+profile_field() {
+  profile_get "$1" | jq -r --arg f "$2" '.[$f] // empty'
+}
+
+profile_name() {
+  local n
+  n="$(profile_field "$1" name)"
+  printf '%s' "${n:-$1}"
+}
+
+profile_iface() {
+  local i
+  i="$(profile_field "$1" interface)"
+  printf '%s' "${i:-$DEFAULT_IFACE}"
+}
+
+# --- estado --------------------------------------------------------------
+
+unit_state() { systemctl is-active "$UNIT" 2>/dev/null || true; }
+
+active_profile_id() {
+  if [[ -f $ACTIVE_FILE ]]; then cat "$ACTIVE_FILE"; fi
+}
+
+# Devuelve vacio cuando la interfaz todavia no existe; con pipefail el fallo de
+# `ip` tumbaria el script entero.
+iface_ip() {
+  local out
+  out="$(ip -4 -o addr show "$1" 2>/dev/null || true)"
+  if [[ -z $out ]]; then
+    return 0
+  fi
+  awk '{print $4}' <<<"$out" | cut -d/ -f1 | head -1
+}
+
+current_iface() {
+  local id
+  id="$(active_profile_id)"
+  if [[ -n $id ]] && profile_get "$id" >/dev/null 2>&1; then
+    profile_iface "$id"
+  else
+    printf '%s' "$DEFAULT_IFACE"
+  fi
+}
+
+# La unidad se pone activa apenas arranca openconnect, que todavia tarda en
+# negociar: el estado real lo define la interfaz.
+state() {
+  if [[ -f $AUTH_MARKER ]]; then
+    echo authenticating
+    return
+  fi
+  case "$(unit_state)" in
+    active | activating | reloading)
+      if [[ -n "$(iface_ip "$(current_iface)")" ]]; then echo connected; else echo connecting; fi ;;
+    failed) echo failed ;;
+    *) echo disconnected ;;
+  esac
+}
+
+since_iso() {
+  local ts
+  ts="$(systemctl show -P ActiveEnterTimestamp "$UNIT" 2>/dev/null || true)"
+  if [[ -z $ts || $ts == "n/a" ]]; then
+    return
+  fi
+  date -d "$ts" -Iseconds 2>/dev/null || true
+}
+
+# Un openconnect ajeno (otro cliente GP corriendo aparte) se pelearia con este por
+# la tabla de rutas.
+foreign_openconnect() {
+  local ours pid
+  ours="$(systemctl show -P MainPID "$UNIT" 2>/dev/null || echo 0)"
+  while read -r pid; do
+    [[ -z $pid || $pid == "$ours" ]] && continue
+    printf '%s' "$pid"
+    return 0
+  done < <(pgrep -x openconnect 2>/dev/null || true)
+  return 1
+}
+
+cmd_status() {
+  local st iface ip since err id name
+  st="$(state)"
+  iface="$(current_iface)"
+  ip="$(iface_ip "$iface")"
+  since="$(since_iso)"
+  id="$(active_profile_id)"
+  name=""
+  if [[ -n $id ]] && profile_get "$id" >/dev/null 2>&1; then
+    name="$(profile_name "$id")"
+  fi
+  err=""
+  if [[ $st == failed || $st == disconnected ]] && [[ -f $ERROR_FILE ]]; then
+    err="$(tail -c 400 "$ERROR_FILE")"
+  fi
+
+  if [[ ${1-} == --json ]]; then
+    jq -n \
+      --arg state "$st" --arg profile "$id" --arg profileName "$name" \
+      --arg interface "$iface" --arg ip "$ip" --arg since "$since" \
+      --arg unit "$UNIT" --arg error "$err" \
+      --argjson profiles "$(profiles_json | jq '[.profiles[] | {id, name, server, mode}]')" \
+      --arg defaultProfile "$(default_profile_id)" \
+      '{state: $state, profile: $profile, profileName: $profileName,
+        interface: $interface, ip: $ip, since: $since, unit: $unit,
+        error: $error, defaultProfile: $defaultProfile, profiles: $profiles}'
+  else
+    printf 'estado    : %s\nperfil    : %s\ninterfaz  : %s\nip        : %s\ndesde     : %s\n' \
+      "$st" "${name:--}" "$iface" "${ip:--}" "${since:--}"
+    if [[ -n $err ]]; then
+      printf 'error     : %s\n' "$err"
+    fi
+  fi
+}
+
+cmd_list() {
+  local def cur id name server mode mark
+  def="$(default_profile_id)"
+  cur="$(active_profile_id)"
+  if [[ -z "$(profile_ids)" ]]; then
+    echo "No hay perfiles. Crea uno con: gpvpn profile add --help"
+    return
+  fi
+  printf '%-3s %-14s %-24s %-32s %s\n' "" "ID" "NOMBRE" "SERVIDOR" "MODO"
+  while read -r id; do
+    [[ -z $id ]] && continue
+    name="$(profile_field "$id" name)"
+    server="$(profile_field "$id" server)"
+    mode="$(profile_field "$id" mode)"
+    mark=" "
+    [[ $id == "$def" ]] && mark="*"
+    [[ $id == "$cur" && "$(state)" == connected ]] && mark="●"
+    printf '%-3s %-14s %-24s %-32s %s\n' "$mark" "$id" "${name:--}" "${server:--}" "${mode:-gateway}"
+  done < <(profile_ids)
+}
+
+# --- conectar ------------------------------------------------------------
+
+cmd_connect() {
+  local id
+  id="$(resolve_profile "${1-}")"
+
+  case "$(state)" in
+    authenticating) die "ya hay un login SAML en curso" ;;
+    connected | connecting)
+      if [[ "$(active_profile_id)" == "$id" ]]; then
+        echo "Ya conectado a $(profile_name "$id")." >&2
+        return 0
+      fi
+      # Cambiar de perfil es bajar y volver a subir: un solo tunel a la vez.
+      echo "Cambiando de $(profile_name "$(active_profile_id)") a $(profile_name "$id")…" >&2
+      cmd_disconnect >/dev/null ;;
+  esac
+
+  local pid
+  if pid="$(foreign_openconnect)"; then
+    die "ya hay otro openconnect corriendo (pid $pid); baja esa VPN primero"
+  fi
+
+  command -v gp-saml-gui >/dev/null || die "falta gp-saml-gui"
+  systemctl cat gpvpn@.service >/dev/null 2>&1 ||
+    die "falta la unidad systemd gpvpn@.service; corre: gpvpn setup"
+
+  local server mode gateway clientos iface
+  server="$(profile_field "$id" server)"
+  mode="$(profile_field "$id" mode)"
+  gateway="$(profile_field "$id" gateway)"
+  clientos="$(profile_field "$id" clientos)"
+  iface="$(profile_iface "$id")"
+  [[ -n $server ]] || die "el perfil '$id' no tiene servidor"
+
+  install -d -m 700 "$RUNDIR"
+  rm -f "$ERROR_FILE"
+  : > "$AUTH_MARKER"
+  # El marker no puede sobrevivir a un login abortado o el widget queda colgado.
+  trap 'rm -f "$AUTH_MARKER"' EXIT
+
+  # -g autentica contra el gateway, -p contra el portal (el default de
+  # gp-saml-gui). Sin flag de exec imprime HOST/USER/COOKIE/OS en stdout en vez
+  # de lanzar openconnect el mismo, que es lo que permite separar las dos fases.
+  local saml_args=(-g)
+  [[ $mode == portal ]] && saml_args=(-p)
+
+  local saml
+  # WEBKIT_DISABLE_COMPOSITING_MODE y GDK_BACKEND=x11 evitan que la ventana de
+  # login salga en negro bajo Wayland.
+  if ! saml="$(WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 \
+                 gp-saml-gui "${saml_args[@]}" "$server" 2>"$ERROR_FILE")"; then
+    die "el login SAML fallo: $(tail -c 300 "$ERROR_FILE")"
+  fi
+
+  local HOST USER COOKIE OS
+  eval "$saml"
+  [[ -n ${HOST-} && -n ${COOKIE-} ]] || die "gp-saml-gui no devolvio un cookie"
+
+  (
+    umask 077
+    {
+      printf 'HOST=%s\n' "$HOST"
+      printf 'VPN_USER=%s\n' "${USER-}"
+      printf 'COOKIE=%s\n' "$COOKIE"
+      printf 'CLIENTOS=%s\n' "${clientos:-${OS-linux-64}}"
+      printf 'IFACE=%s\n' "$iface"
+      # --authgroup elige el gateway cuando se autentico contra un portal; es
+      # el mismo campo que el desplegable del cliente oficial.
+      [[ -n $gateway ]] && printf 'AUTHGROUP=%s\n' "$gateway"
+      profile_get "$id" | jq -r '(.extraArgs // [])[]' | while read -r a; do
+        [[ -n $a ]] && printf 'EXTRA=%s\n' "$a"
+      done
+    } > "$PARAMS"
+  )
+
+  printf '%s' "$id" > "$ACTIVE_FILE"
+  rm -f "$AUTH_MARKER"
+  trap - EXIT
+
+  if ! systemctl start "$UNIT" 2>"$ERROR_FILE"; then
+    rm -f "$ACTIVE_FILE"
+    die "no se pudo arrancar $UNIT: $(tail -c 300 "$ERROR_FILE")"
+  fi
+
+  # Espera a que la interfaz tenga IP para no reportar exito antes de tiempo.
+  local i
+  for ((i = 0; i < 60; i++)); do
+    if [[ -n "$(iface_ip "$iface")" ]]; then
+      echo "Conectado a $(profile_name "$id") ($iface $(iface_ip "$iface"))"
+      return 0
+    fi
+    if [[ "$(unit_state)" == failed ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+  journalctl -u "$UNIT" -n 20 --no-pager -o cat > "$ERROR_FILE" 2>/dev/null || true
+  die "el tunel no levanto; revisa: gpvpn logs"
+}
+
+# --- desconectar ---------------------------------------------------------
+
+cmd_disconnect() {
+  rm -f "$AUTH_MARKER"
+  systemctl stop "$UNIT" || die "no se pudo parar $UNIT"
+  rm -f "$ACTIVE_FILE"
+  # El cookie ya no sirve para nada y es material sensible.
+  if [[ -f $PARAMS ]]; then
+    shred -u "$PARAMS" 2>/dev/null || rm -f "$PARAMS"
+  fi
+  echo "Desconectado."
+}
+
+cmd_toggle() {
+  case "$(state)" in
+    connected | connecting | authenticating) cmd_disconnect ;;
+    *) cmd_connect "${1-}" ;;
+  esac
+}
+
+cmd_logs() {
+  if [[ $# -eq 0 ]]; then
+    journalctl -u "$UNIT" --no-pager -n 50
+  else
+    journalctl -u "$UNIT" "$@"
+  fi
+}
+
+# --- perfiles (escritura) ------------------------------------------------
+
+profile_usage() {
+  cat <<'USAGE'
+uso: gpvpn profile <accion>
+
+  add --id ID --server HOST [opciones]   Crea o reemplaza un perfil
+  rm ID                                   Borra un perfil
+  default ID                              Marca el perfil por defecto
+  list                                    Igual que `gpvpn list`
+
+opciones de add:
+  --name NOMBRE        Etiqueta visible (default: el id)
+  --mode gateway|portal  Contra que autentica gp-saml-gui (default: gateway)
+  --gateway NOMBRE     Gateway a elegir cuando el modo es portal (--authgroup)
+  --user USUARIO       Usuario a pasarle a openconnect (normalmente lo da el SAML)
+  --clientos VALOR     linux-64 (default), linux, win, mac-intel, android, apple-ios
+  --interface NOMBRE   Interfaz del tunel (default: gpvpn0)
+USAGE
+}
+
+cmd_profile_add() {
+  local id="" name="" server="" mode="gateway" gateway="" user="" clientos="linux-64" iface="$DEFAULT_IFACE"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) id="$2"; shift 2 ;;
+      --name) name="$2"; shift 2 ;;
+      --server) server="$2"; shift 2 ;;
+      --mode) mode="$2"; shift 2 ;;
+      --gateway) gateway="$2"; shift 2 ;;
+      --user) user="$2"; shift 2 ;;
+      --clientos) clientos="$2"; shift 2 ;;
+      --interface) iface="$2"; shift 2 ;;
+      -h | --help) profile_usage; return 0 ;;
+      *) die "opcion desconocida: $1" ;;
+    esac
+  done
+
+  [[ -n $id ]] || die "falta --id"
+  [[ -n $server ]] || die "falta --server"
+  [[ $id =~ ^[a-zA-Z0-9_-]+$ ]] || die "el id solo admite letras, numeros, guion y guion bajo"
+  case "$mode" in gateway | portal) ;; *) die "--mode debe ser gateway o portal" ;; esac
+  case "$clientos" in
+    linux | linux-64 | win | mac-intel | android | apple-ios) ;;
+    *) die "--clientos invalido: $clientos" ;;
+  esac
+  [[ $iface =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || die "nombre de interfaz invalido"
+
+  ensure_profiles
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg id "$id" --arg name "${name:-$id}" --arg server "$server" \
+     --arg mode "$mode" --arg gateway "$gateway" --arg user "$user" \
+     --arg clientos "$clientos" --arg iface "$iface" \
+     '
+     def entry: {
+       id: $id, name: $name, server: $server, mode: $mode,
+       gateway: (if $gateway == "" then null else $gateway end),
+       user: (if $user == "" then null else $user end),
+       clientos: $clientos, interface: $iface, extraArgs: []
+     };
+     .profiles = ((.profiles // []) | map(select(.id != $id)) + [entry])
+     | .defaultProfile = (.defaultProfile // $id)
+     ' "$PROFILES" > "$tmp"
+  mv "$tmp" "$PROFILES"
+  echo "Perfil '$id' guardado."
+}
+
+cmd_profile_rm() {
+  local id="${1-}"
+  [[ -n $id ]] || die "falta el id"
+  ensure_profiles
+  profile_get "$id" >/dev/null 2>&1 || die "no existe el perfil '$id'"
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg id "$id" '
+    .profiles = ((.profiles // []) | map(select(.id != $id)))
+    | .defaultProfile = (if .defaultProfile == $id then (.profiles[0].id // null) else .defaultProfile end)
+    ' "$PROFILES" > "$tmp"
+  mv "$tmp" "$PROFILES"
+  echo "Perfil '$id' borrado."
+}
+
+cmd_profile_default() {
+  local id
+  id="$(resolve_profile "${1-}")"
+  local tmp
+  tmp="$(mktemp)"
+  jq --arg id "$id" '.defaultProfile = $id' "$PROFILES" > "$tmp"
+  mv "$tmp" "$PROFILES"
+  echo "Perfil por defecto: $id"
+}
+
+cmd_profile() {
+  case "${1-}" in
+    add) shift; cmd_profile_add "$@" ;;
+    rm | remove) shift; cmd_profile_rm "$@" ;;
+    default) shift; cmd_profile_default "$@" ;;
+    list | "") cmd_list ;;
+    -h | --help) profile_usage ;;
+    *) profile_usage; exit 1 ;;
+  esac
+}
+
+# --- setup ---------------------------------------------------------------
+
+# Para la instalacion por git (omarchy plugin add), que solo copia el QML: la
+# unidad y la regla polkit hay que ponerlas igual.
+cmd_setup() {
+  local here unit rules
+  if [[ ${1-} != --force ]] &&
+     systemctl cat gpvpn@.service >/dev/null 2>&1 &&
+     [[ -x /usr/lib/gpvpn/gpvpn-tunnel ]]; then
+    echo "El backend ya esta instalado (usa --force para reinstalarlo)."
+    return 0
+  fi
+  here="$(dirname "$(dirname "$(readlink -f "$0")")")"
+  unit="$here/systemd/gpvpn@.service"
+  rules="$here/polkit/48-gpvpn.rules"
+  [[ -f $unit && -f $rules ]] || die "no encuentro los archivos de sistema junto a $0"
+
+  pkexec bash -c '
+    set -e
+    install -Dm755 "$1" /usr/lib/gpvpn/gpvpn-tunnel
+    install -Dm644 "$2" /usr/lib/systemd/system/gpvpn@.service
+    install -Dm644 "$3" /usr/share/polkit-1/rules.d/48-gpvpn.rules
+    systemctl daemon-reload
+  ' _ "$here/libexec/gpvpn-tunnel" "$unit" "$rules"
+  echo "Backend instalado."
+}
+
+usage() {
+  cat <<'USAGE'
+uso: gpvpn <comando>
+
+  connect [perfil]     Login SAML y levanta el tunel
+  disconnect           Baja el tunel y borra el cookie
+  toggle [perfil]      Conecta o desconecta segun el estado
+  status [--json]      Estado actual (--json es lo que consume el widget)
+  list                 Perfiles configurados
+  profile <accion>     add / rm / default (ver: gpvpn profile --help)
+  logs [args]          Journal de la unidad del tunel
+  setup                Instala unidad systemd y regla polkit (pide root)
+
+Perfiles en ~/.config/gpvpn/profiles.json
+USAGE
+}
+
+case "${1-}" in
+  connect) shift; cmd_connect "${1-}" ;;
+  disconnect | down) cmd_disconnect ;;
+  toggle) shift; cmd_toggle "${1-}" ;;
+  status) shift; cmd_status "$@" ;;
+  list | ls) cmd_list ;;
+  profile) shift; cmd_profile "$@" ;;
+  logs) shift; cmd_logs "$@" ;;
+  setup) shift; cmd_setup "${1-}" ;;
+  -h | --help | help | "") usage ;;
+  *) usage; exit 1 ;;
+esac

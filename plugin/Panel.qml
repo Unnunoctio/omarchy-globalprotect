@@ -1,0 +1,640 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import Quickshell
+import Quickshell.Io
+import qs.Commons
+import qs.Ui
+
+Panel {
+  id: root
+  moduleName: "unnunoctio.globalprotect"
+  ipcTarget: "unnunoctio.globalprotect"
+  manageIpc: false
+
+  property bool cursorActive: false
+  property string focusSection: "header"
+  property int profileIndex: 0
+  property bool addingProfile: false
+
+  readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color dim: Qt.darker(foreground, 1.55)
+  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property color iconColor: vpn.state === "failed" ? urgent : (vpn.active ? foreground : dim)
+  readonly property color barIconColor: vpn.state === "failed" ? (bar ? bar.urgent : Color.urgent)
+                                                               : (vpn.active ? barForeground : Qt.darker(barForeground, 1.55))
+  readonly property bool headerHasCursor: cursorActive && focusSection === "header" && vpn.installed
+
+  function toggleVpn() {
+    if (vpn.installed && vpn.hasProfiles) vpn.toggle()
+  }
+
+  function setHeaderCursor() {
+    cursorActive = true
+    focusSection = "header"
+  }
+
+  function setProfileCursor(index) {
+    cursorActive = true
+    focusSection = "profiles"
+    profileIndex = index
+  }
+
+  function selectedProfile() {
+    if (vpn.profiles.length === 0) return null
+    return vpn.profiles[Math.max(0, Math.min(profileIndex, vpn.profiles.length - 1))]
+  }
+
+  // Cada fila enciende o apaga su propio perfil: sobre el que ya esta arriba
+  // desconecta, sobre otro cambia (el CLI baja y vuelve a subir el tunel).
+  function toggleProfile(p) {
+    if (!p) return
+    if (p.id === vpn.activeProfileId) vpn.disconnect()
+    else vpn.connect(p.id)
+  }
+
+  function openAddForm() {
+    addingProfile = true
+    vpn.addError = ""
+    nameField.text = ""
+    serverField.text = ""
+    modeGroup.value = "gateway"
+    setHeaderCursor()
+    Qt.callLater(function () { nameField.forceActiveFocus() })
+  }
+
+  function closeAddForm() {
+    addingProfile = false
+    vpn.addError = ""
+    Qt.callLater(function () { keyCatcher.forceActiveFocus() })
+  }
+
+  function toggleAddForm() {
+    if (addingProfile) closeAddForm()
+    else openAddForm()
+  }
+
+  function submitAddForm() {
+    vpn.addProfile(nameField.text, serverField.text, modeGroup.value)
+  }
+
+  function moveCursor(dx, dy) {
+    cursorActive = true
+    if (dy === 0) return
+    if (focusSection === "header") {
+      if (dy > 0 && vpn.profiles.length > 0) setProfileCursor(0)
+      return
+    }
+    if (focusSection === "profiles") {
+      if (dy < 0 && profileIndex === 0) {
+        setHeaderCursor()
+        return
+      }
+      profileIndex = Math.max(0, Math.min(vpn.profiles.length - 1, profileIndex + dy))
+    }
+  }
+
+  function activateCursor() {
+    // El control del header dejo de ser el switch: ahora da de alta un perfil.
+    if (focusSection === "header") {
+      toggleAddForm()
+      return
+    }
+    toggleProfile(selectedProfile())
+  }
+
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
+
+  onOpenedChanged: if (opened) {
+    cursorActive = false
+    focusSection = "header"
+    profileIndex = 0
+    addingProfile = false
+    vpn.refresh()
+    Qt.callLater(function () { keyCatcher.forceActiveFocus() })
+  }
+
+  Service {
+    id: vpn
+    settings: root.settings
+  }
+
+  Connections {
+    target: vpn
+    function onProfileAdded(id) { root.closeAddForm() }
+  }
+
+  IpcHandler {
+    target: root.ipcTarget
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    function connect(profile: string): string { vpn.connect(profile); return "ok" }
+    function disconnect(): string { vpn.disconnect(); return "ok" }
+    function refresh(): string { vpn.refresh(); return "ok" }
+    function status(): string { return vpn.state }
+  }
+
+  BarIconButton {
+    id: button
+    anchors.fill: parent
+    bar: root.bar
+    iconComponent: Component {
+      Item {
+        ShieldIcon {
+          anchors.centerIn: parent
+          iconSize: Style.space(13)
+          color: root.barIconColor
+          filled: vpn.connected
+          holeColor: root.bar ? root.bar.background : Color.background
+          opacity: vpn.busyState ? 0.55 : 1.0
+
+          // Latido mientras negocia: el escudo hueco solo no alcanza para
+          // distinguir "conectando" de "desconectada".
+          SequentialAnimation on opacity {
+            running: vpn.busyState
+            loops: Animation.Infinite
+            NumberAnimation { to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
+            NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutQuad }
+          }
+        }
+      }
+    }
+    onPressed: function (buttonCode) {
+      if (buttonCode === Qt.RightButton) root.toggleVpn()
+      else if (buttonCode === Qt.MiddleButton) vpn.refresh()
+      else root.toggle()
+    }
+  }
+
+  KeyboardPanel {
+    id: panel
+    anchorItem: button
+    owner: root
+    bar: root.bar
+    open: root.opened
+    focusTarget: keyCatcher
+    contentWidth: panel.fittedContentWidth(Style.space(400))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+      // Mientras se escribe en el formulario las teclas son texto, no atajos.
+      blocked: nameField.activeFocus || serverField.activeFocus
+      onMoveRequested: function (dx, dy) {
+        if (!root.cursorActive) { root.cursorActive = true; return }
+        root.moveCursor(dx, dy)
+      }
+      onActivateRequested: if (root.cursorActive) root.activateCursor()
+      onCloseRequested: if (root.addingProfile) root.closeAddForm(); else root.close()
+      onTabRequested: function (direction) { root.switchPanel(direction) }
+      onTextKey: function (t) {
+        var key = String(t || "").toLowerCase()
+        if (key === "t") root.toggleVpn()
+        else if (key === "n") root.toggleAddForm()
+        else if (key === "r") vpn.refresh()
+        // `l` no llega hasta aca: PanelKeyCatcher lo gasta como flecha derecha.
+        else if (key === "g") Quickshell.execDetached(["uwsm-app", "--", "foot", "-T", "GlobalProtect", "bash", "-c", "gpvpn logs -f"])
+      }
+
+      Flickable {
+        id: panelFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Column {
+          id: column
+          width: panelFlick.width
+          spacing: Style.space(12)
+
+          Item {
+            id: header
+            width: parent.width
+            implicitHeight: hero.implicitHeight
+            // Lo lee el trailingControl del hero, cuyo `root` resuelve a
+            // PanelHero y no a este Panel.
+            readonly property bool ringVisible: root.headerHasCursor
+            readonly property bool formOpen: root.addingProfile
+            function focusHero() { root.setHeaderCursor() }
+
+            PanelHero {
+              id: hero
+              width: parent.width
+              title: "GlobalProtect"
+              meta: vpn.stateLabel()
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              iconOpacity: vpn.active ? 1.0 : 0.5
+              iconComponent: Component {
+                ShieldIcon {
+                  iconSize: Style.font.display
+                  color: root.iconColor
+                  filled: vpn.connected
+                  holeColor: Color.popups.background
+                }
+              }
+
+              trailingControl: Component {
+                PanelActionButton {
+                  visible: vpn.installed
+                  bordered: true
+                  iconText: header.formOpen ? "󰅖" : "󰐕"
+                  tooltipText: header.formOpen ? "Cancelar" : "Agregar perfil"
+                  foreground: hero.foreground
+                  fontFamily: hero.fontFamily
+                  hasCursor: header.ringVisible
+                  onHovered: function (on) { if (on) header.focusHero() }
+                  onClicked: root.toggleAddForm()
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: vpn.actionStatus !== "" || vpn.lastError !== ""
+            width: parent.width
+            text: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
+            color: vpn.lastError !== "" && vpn.actionStatus === "" ? root.urgent : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          PanelSeparator {
+            visible: vpn.connected
+            foreground: root.foreground
+          }
+
+          Column {
+            visible: vpn.connected
+            width: parent.width
+            spacing: Style.spacing.labelGap
+
+            InfoPair {
+              visible: vpn.gateway !== ""
+              label: "Gateway"
+              value: vpn.gateway
+            }
+            InfoPair { label: "Interfaz"; value: vpn.interfaceName }
+            InfoPair {
+              visible: vpn.ip !== ""
+              label: "IP"
+              value: vpn.ip
+            }
+            InfoPair {
+              visible: uptime.text !== ""
+              label: "Conectada hace"
+              value: uptime.text
+            }
+          }
+
+          PanelSeparator {
+            visible: vpn.installed
+            foreground: root.foreground
+          }
+
+          Column {
+            id: addForm
+            visible: root.addingProfile
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              text: "NUEVO PERFIL"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            FormRow {
+              label: "Nombre"
+              TextField {
+                id: nameField
+                Layout.fillWidth: true
+                placeholderText: "Trabajo"
+                foreground: root.foreground
+                font.pixelSize: Style.font.bodySmall
+                verticalPadding: Style.space(4)
+                onAccepted: serverField.forceActiveFocus()
+                Keys.onEscapePressed: root.closeAddForm()
+              }
+            }
+
+            FormRow {
+              label: "Servidor"
+              TextField {
+                id: serverField
+                Layout.fillWidth: true
+                placeholderText: "vpn.empresa.com"
+                foreground: root.foreground
+                font.pixelSize: Style.font.bodySmall
+                verticalPadding: Style.space(4)
+                onAccepted: root.submitAddForm()
+                Keys.onEscapePressed: root.closeAddForm()
+              }
+            }
+
+            FormRow {
+              label: "Modo"
+              ButtonGroup {
+                id: modeGroup
+                Layout.fillWidth: true
+                focusable: false
+                value: "gateway"
+                options: ["gateway", "portal"]
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onChanged: function (v) { modeGroup.value = v }
+              }
+            }
+
+            Text {
+              visible: vpn.addError !== ""
+              width: parent.width
+              text: vpn.addError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            RowLayout {
+              width: parent.width
+              spacing: Style.space(8)
+
+              Text {
+                Layout.fillWidth: true
+                text: "el id sale del nombre"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+
+              Button {
+                text: "Cancelar"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.closeAddForm()
+              }
+
+              Button {
+                id: saveButton
+                readonly property bool ready: nameField.text.trim() !== ""
+                                              && serverField.text.trim() !== ""
+                                              && !vpn.adding
+                text: vpn.adding ? "Guardando…" : "Guardar"
+                bordered: true
+                selected: ready
+                opacity: ready ? 1.0 : 0.45
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: if (ready) root.submitAddForm()
+              }
+            }
+          }
+
+          PanelSeparator {
+            visible: root.addingProfile
+            foreground: root.foreground
+          }
+
+          Column {
+            visible: vpn.installed
+            width: parent.width
+            spacing: Style.space(10)
+
+            PanelSectionHeader {
+              text: "PERFILES"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Text {
+              visible: !vpn.hasProfiles
+              width: parent.width
+              text: "No hay perfiles configurados.\nAgregá uno con el botón + de arriba."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Column {
+              id: profileColumn
+              visible: vpn.hasProfiles
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: vpn.profiles
+                ProfileRow {
+                  required property var modelData
+                  required property int index
+                  width: profileColumn.width
+                  profile: modelData
+                  rowIndex: index
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: !vpn.installed
+            width: parent.width
+            text: "No se encontró el CLI `gpvpn`.\nInstalá el backend con: gpvpn setup"
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
+            text: "n nuevo perfil · t conectar · r refrescar · g logs · esc cerrar"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+          }
+        }
+      }
+    }
+  }
+
+  // El uptime se calcula desde el timestamp de la unidad, asi que hay que
+  // repintarlo aunque el estado no cambie.
+  QtObject {
+    id: uptime
+    property string text: ""
+  }
+
+  Timer {
+    interval: 1000
+    running: root.opened && vpn.connected
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: uptime.text = vpn.uptimeText()
+  }
+
+  // Etiqueta a la izquierda, control a la derecha: el hijo que le pasen es el
+  // control y se estira solo.
+  component FormRow: RowLayout {
+    id: formRow
+    property string label: ""
+
+    width: parent ? parent.width : implicitWidth
+    spacing: Style.space(8)
+
+    Text {
+      Layout.preferredWidth: Style.space(62)
+      Layout.alignment: Qt.AlignVCenter
+      text: formRow.label
+      color: root.foreground
+      opacity: 0.6
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+  }
+
+  component ProfileRow: CursorSurface {
+    id: profileRow
+    property var profile: null
+    property int rowIndex: 0
+    readonly property bool isActive: profile && profile.id === vpn.activeProfileId
+    readonly property bool isDefault: profile && profile.id === vpn.defaultProfile
+
+    hasCursor: root.cursorActive && root.focusSection === "profiles" && root.profileIndex === rowIndex
+    foreground: root.foreground
+    implicitHeight: Math.max(rowContent.implicitHeight, profileSwitch.implicitHeight) + Style.spacing.rowPaddingX
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: root.setProfileCursor(profileRow.rowIndex)
+      onClicked: {
+        root.setProfileCursor(profileRow.rowIndex)
+        root.toggleProfile(profileRow.profile)
+      }
+    }
+
+    RowLayout {
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(8)
+
+      Rectangle {
+        width: Style.space(7)
+        height: width
+        radius: width / 2
+        Layout.alignment: Qt.AlignVCenter
+        color: profileRow.isActive ? root.foreground : "transparent"
+        border.width: profileRow.isActive ? 0 : 1
+        border.color: root.dim
+      }
+
+      ColumnLayout {
+        id: rowContent
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+
+        Text {
+          Layout.fillWidth: true
+          text: profileRow.profile ? String(profileRow.profile.name || profileRow.profile.id) : ""
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+
+        Text {
+          Layout.fillWidth: true
+          text: profileRow.profile ? String(profileRow.profile.server || "") : ""
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideLeft
+        }
+      }
+
+      Text {
+        visible: profileRow.isDefault && !profileRow.isActive
+        text: "default"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        Layout.alignment: Qt.AlignVCenter
+      }
+
+      // El switch de la fila manda sobre su propio perfil; la fila entera sigue
+      // siendo clickeable, pero el switch se come el click cuando cae encima.
+      ToggleSwitch {
+        id: profileSwitch
+        Layout.alignment: Qt.AlignVCenter
+        checked: profileRow.isActive
+        busy: vpn.busy && profileRow.isActive
+        cursorRing: false
+        trackHeight: Style.space(18)
+        foreground: root.foreground
+        onHovered: function (on) { if (on) root.setProfileCursor(profileRow.rowIndex) }
+        onToggled: {
+          root.setProfileCursor(profileRow.rowIndex)
+          root.toggleProfile(profileRow.profile)
+        }
+      }
+    }
+  }
+
+  component InfoPair: Item {
+    id: pair
+    property string label: ""
+    property string value: ""
+
+    width: parent.width
+    implicitHeight: Math.max(labelText.implicitHeight, valueText.implicitHeight)
+
+    Text {
+      id: labelText
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      text: pair.label
+      color: root.foreground
+      opacity: 0.6
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    Text {
+      id: valueText
+      anchors.left: labelText.right
+      anchors.leftMargin: Style.space(8)
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      text: pair.value
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideLeft
+    }
+  }
+}

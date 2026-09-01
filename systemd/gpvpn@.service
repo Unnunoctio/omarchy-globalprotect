@@ -1,0 +1,15 @@
+[Unit]
+Description=GlobalProtect VPN para el uid %i
+Documentation=man:openconnect(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/gpvpn/gpvpn-tunnel %i
+# openconnect baja el tunel y restaura rutas y DNS al recibir SIGINT.
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=15
+# El cookie SAML es de un solo uso: reintentar solo repite el mismo fallo.
+Restart=no
