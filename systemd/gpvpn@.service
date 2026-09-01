@@ -13,3 +13,40 @@ KillMode=mixed
 TimeoutStopSec=15
 # El cookie SAML es de un solo uso: reintentar solo repite el mismo fallo.
 Restart=no
+# El borrado del cookie no puede depender de que el CLI llegue a hacerlo: la
+# unidad tambien se para por apagado, o con un `systemctl stop` directo.
+ExecStopPost=-/usr/bin/rm -f /run/user/%i/gpvpn/params
+
+# --- endurecimiento ------------------------------------------------------
+# Cada directiva se eligio contra lo que el tunel necesita de verdad, y se
+# verifico corriendo una sonda y el propio openconnect bajo este sandbox.
+#
+# Las que NO estan, y por que (las cuatro se probaron y fallan):
+#   ProtectHome=          cubre /run/user, de donde sale el params: lo rompe
+#   PrivateDevices=       oculta /dev/net/tun, que openconnect necesita abrir
+#   ProtectSystem=strict  deja /run de solo lectura y vpnc-script usa /run/vpnc
+#   ProtectKernelModules= tun es CONFIG_TUN=m; vpnc-script hace modprobe en
+#                         pre-init si no esta cargado, y esto lo bloquearia
+# vpnc-script deja estado en /run/vpnc (rutas previas, backup de resolv.conf).
+UMask=0077
+InaccessiblePaths=/home
+PrivateTmp=yes
+ProtectSystem=true
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# vpnc-script solo LEE /proc/sys/kernel/modprobe; nadie escribe sysctl.
+ProtectKernelTunables=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+# AF_NETLINK para rutas e interfaces, AF_UNIX para el D-Bus de resolvectl.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+# CAP_DAC_OVERRIDE es imprescindible: root lee (y despues borra) un params 0600
+# que pertenece al usuario, dentro de un directorio 700 suyo.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

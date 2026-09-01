@@ -14,6 +14,15 @@ set -euo pipefail
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/gpvpn"
 PROFILES="$CONFIG_DIR/profiles.json"
 
+# gp-saml-gui persiste ahi la sesion del proveedor de identidad -las cookies del
+# IdP corporativo, no la del tunel- para no tener que reautenticar entera cada
+# vez. Por defecto la deja en ~/.gp-saml-gui-cookies con el umask del usuario,
+# tipicamente 644. Es material de sesion, no un dotfile mas: va a un directorio
+# 700 y con el archivo en 600.
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gpvpn"
+COOKIE_JAR="$STATE_DIR/cookies"
+LEGACY_COOKIE_JAR="$HOME/.gp-saml-gui-cookies"
+
 UID_SELF="$(id -u)"
 UNIT="gpvpn@${UID_SELF}.service"
 RUNDIR="${XDG_RUNTIME_DIR:-/run/user/${UID_SELF}}/gpvpn"
@@ -25,6 +34,57 @@ ERROR_FILE="$RUNDIR/last-error"
 DEFAULT_IFACE="gpvpn0"
 
 die() { printf 'gpvpn: %s\n' "$*" >&2; exit 1; }
+
+# --- secretos ------------------------------------------------------------
+
+# gp-saml-gui trae --verbose activo por defecto (default=1) y en ese modo
+# imprime el cookie SAML a stderr, dentro del comando openconnect que sugiere.
+# Ese stderr termina en ERROR_FILE, que a su vez sale por `status --json` hacia
+# el panel y las notificaciones. Se le pasa -q, pero el filtro va igual: el
+# cookie no puede quedar en disco ni salir por ninguna via de diagnostico.
+REDACT_SED=(
+  -E
+  -e 's/([A-Za-z-]*[Cc]ookie[A-Za-z-]*)=[^[:space:]]+/\1=<redactado>/g'
+  -e '/^[[:space:]]*echo /d'
+)
+
+redact_secrets() { sed "${REDACT_SED[@]}"; }
+
+redact_error_file() {
+  [[ -f $ERROR_FILE ]] || return 0
+  sed -i "${REDACT_SED[@]}" "$ERROR_FILE"
+}
+
+# 600 explicito en vez de heredar el umask: el archivo puede traer diagnostico
+# del login.
+new_error_file() { install -m 600 /dev/null "$ERROR_FILE"; }
+
+# Mueve el jar heredado la primera vez y deja los permisos como corresponde.
+# Mover en vez de copiar: una copia en 644 en $HOME anularia todo el punto.
+ensure_cookie_jar() {
+  install -d -m 700 "$STATE_DIR"
+  if [[ ! -e $COOKIE_JAR && -f $LEGACY_COOKIE_JAR ]]; then
+    if mv "$LEGACY_COOKIE_JAR" "$COOKIE_JAR" 2>/dev/null; then
+      echo "gpvpn: sesion del IdP movida a $COOKIE_JAR (modo 600)" >&2
+    fi
+  fi
+  harden_cookie_jar
+}
+
+# WebKit reescribe el archivo al cerrar la ventana de login, con el umask del
+# proceso: hay que reponer el modo despues, no solo al crearlo.
+harden_cookie_jar() {
+  if [[ -e $COOKIE_JAR ]]; then
+    chmod 600 "$COOKIE_JAR" 2>/dev/null || true
+  fi
+}
+
+# El cookie es material de sesion y no tiene por que sobrevivir al tunel.
+# Antes esto era `shred -u`, que sobre tmpfs no da la sobrescritura que sugiere
+# el nombre: tmpfs vive en memoria y no expone un mapeo estable de bloques, asi
+# que shred reescribe paginas que el kernel puede haber reubicado. Lo que
+# realmente protege es el unlink, el modo 600 y el directorio 700.
+wipe_params() { rm -f "$PARAMS"; }
 
 # --- perfiles ------------------------------------------------------------
 
@@ -160,7 +220,7 @@ cmd_status() {
   fi
   err=""
   if [[ $st == failed || $st == disconnected ]] && [[ -f $ERROR_FILE ]]; then
-    err="$(tail -c 400 "$ERROR_FILE")"
+    err="$(tail -c 400 "$ERROR_FILE" | redact_secrets)"
   fi
 
   if [[ ${1-} == --json ]]; then
@@ -239,7 +299,8 @@ cmd_connect() {
   [[ -n $server ]] || die "el perfil '$id' no tiene servidor"
 
   install -d -m 700 "$RUNDIR"
-  rm -f "$ERROR_FILE"
+  ensure_cookie_jar
+  new_error_file
   : > "$AUTH_MARKER"
   # El marker no puede sobrevivir a un login abortado o el widget queda colgado.
   trap 'rm -f "$AUTH_MARKER"' EXIT
@@ -253,12 +314,39 @@ cmd_connect() {
   local saml
   # WEBKIT_DISABLE_COMPOSITING_MODE y GDK_BACKEND=x11 evitan que la ventana de
   # login salga en negro bajo Wayland.
+  # -q apaga el bloque verboso de gp-saml-gui, que es el que imprime el cookie.
+  # Los errores accionables ("Login window closed by user.", los tracebacks) no
+  # dependen de la verbosidad y siguen llegando.
   if ! saml="$(WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 \
-                 gp-saml-gui "${saml_args[@]}" "$server" 2>"$ERROR_FILE")"; then
-    die "el login SAML fallo: $(tail -c 300 "$ERROR_FILE")"
+                 gp-saml-gui -q --cookies "$COOKIE_JAR" \
+                   "${saml_args[@]}" "$server" 2>"$ERROR_FILE")"; then
+    harden_cookie_jar
+    redact_error_file
+    die "el login SAML fallo: $(tail -c 300 "$ERROR_FILE" | redact_secrets)"
   fi
+  harden_cookie_jar
+  redact_error_file
 
   local HOST USER COOKIE OS
+  # gp-saml-gui pasa los cuatro valores por shlex.quote, asi que el eval es
+  # seguro mientras la salida sea exactamente esas cuatro asignaciones. En vez
+  # de escribir un parser de shlex a mano -que tendria mas chances de meter un
+  # bug que de arreglar uno- se valida la forma y recien despues se evalua.
+  #
+  # shlex.quote emite el valor de una de dos formas: una corrida de caracteres
+  # seguros (%+,-./0-9:=@A-Z_a-z, tal cual figura en su fuente), o el valor
+  # entero entre comillas simples. Cualquier otra cosa -un `;`, un `&&`, una
+  # linea de mas, o el escape '"'"' que shlex usa para un apostrofo interno-
+  # no matchea y aborta sin evaluar nada.
+  # En bash puro y no con `grep -qv`: la semantica de -q junto a -v difiere
+  # entre implementaciones de grep, y de esto depende que se evalue o no.
+  local saml_re="^(HOST|USER|COOKIE|OS)=([A-Za-z0-9_%+,./:=@-]*|'[^']*')$"
+  local line
+  while IFS= read -r line; do
+    [[ -z $line ]] && continue
+    [[ $line =~ $saml_re ]] ||
+      die "gp-saml-gui devolvio una salida con una forma inesperada; no se evalua"
+  done <<<"$saml"
   eval "$saml"
   [[ -n ${HOST-} && -n ${COOKIE-} ]] || die "gp-saml-gui no devolvio un cookie"
 
@@ -285,7 +373,9 @@ cmd_connect() {
 
   if ! systemctl start "$UNIT" 2>"$ERROR_FILE"; then
     rm -f "$ACTIVE_FILE"
-    die "no se pudo arrancar $UNIT: $(tail -c 300 "$ERROR_FILE")"
+    # El tunel no llego a leerlo: el cookie no puede quedar en tmpfs.
+    wipe_params
+    die "no se pudo arrancar $UNIT: $(tail -c 300 "$ERROR_FILE" | redact_secrets)"
   fi
 
   # Espera a que la interfaz tenga IP para no reportar exito antes de tiempo.
@@ -309,11 +399,13 @@ cmd_connect() {
 cmd_disconnect() {
   rm -f "$AUTH_MARKER"
   systemctl stop "$UNIT" || die "no se pudo parar $UNIT"
+  # `stop` no limpia el estado `failed`: sin esto, tras un arranque fallido el
+  # widget se queda en rojo para siempre aunque ya no haya nada corriendo.
+  systemctl reset-failed "$UNIT" 2>/dev/null || true
   rm -f "$ACTIVE_FILE"
-  # El cookie ya no sirve para nada y es material sensible.
-  if [[ -f $PARAMS ]]; then
-    shred -u "$PARAMS" 2>/dev/null || rm -f "$PARAMS"
-  fi
+  wipe_params
+  # El diagnostico del login tampoco tiene por que sobrevivir a la sesion.
+  rm -f "$ERROR_FILE"
   echo "Desconectado."
 }
 

@@ -37,10 +37,11 @@ gpvpn connect [perfil]
 systemd propia en vez de colgar de una terminal, y por lo tanto que conectar y
 desconectar sean dos acciones independientes.
 
-Desconectar es `systemctl stop` de la misma unidad, y el cookie se borra con
-`shred`. La regla polkit acota el permiso sin password a las unidades
-`gpvpn@<uid>.service` y a los verbos start/stop/restart, para usuarios locales
-del grupo `wheel`.
+Desconectar es `systemctl stop` de la misma unidad, y el cookie se borra ahí
+mismo — y también desde un `ExecStopPost` de la unidad, para que no dependa de
+que el CLI llegue a hacerlo. La regla polkit acota el permiso sin password a los
+verbos start/stop/restart sobre la unidad `gpvpn@<uid>.service` **del uid que la
+invoca**, para usuarios locales y activos del grupo `wheel`.
 
 Un solo túnel a la vez, igual que el cliente oficial: cambiar de perfil baja el
 actual y levanta el nuevo. Antes de conectar, `gpvpn` se niega si detecta otro
@@ -58,6 +59,26 @@ segundos en negociar. Por eso el estado real se deduce de la interfaz:
 | active | con IP | `connected` |
 | failed | — | `failed` |
 | inactive | — | `disconnected` |
+
+### Qué queda en disco
+
+| Ruta | Qué es | Cuánto vive |
+|---|---|---|
+| `$XDG_STATE_HOME/gpvpn/cookies` | Sesión del proveedor de identidad (el SSO corporativo), en texto plano. Directorio `700`, archivo `600` | Hasta que expire, o la borres |
+| `$XDG_RUNTIME_DIR/gpvpn/params` | Cookie del túnel —de un solo uso— y parámetros. `600`, en tmpfs | Se borra al desconectar, y también desde el `ExecStopPost` de la unidad |
+| `$XDG_RUNTIME_DIR/gpvpn/last-error` | Diagnóstico del último intento, filtrado de secretos. `600`, en tmpfs | Se borra al desconectar |
+| `~/.config/gpvpn/profiles.json` | Los perfiles. No guarda secretos | Permanente |
+
+La sesión del IdP se persiste a propósito: es lo que evita reautenticar de cero en cada
+conexión. `gp-saml-gui` la deja por defecto en `~/.gp-saml-gui-cookies` con el umask del
+usuario, típicamente `644`; `gpvpn` la mueve **una vez** al directorio de estado y le repone
+el modo `600` después de cada login, porque WebKit reescribe el archivo al cerrar la ventana.
+
+Para no persistir nada y autenticar entero cada vez, basta borrar ese archivo.
+
+> Sobre `shred`: el `params` vive en tmpfs, que es memoria y no expone un mapeo estable de
+> bloques, así que sobrescribirlo no da la garantía que el nombre sugiere. Lo que protege es
+> el `unlink` inmediato, el modo `600` y el directorio `700`.
 
 ## Perfiles
 
@@ -81,7 +102,23 @@ gpvpn list
 | `gateway` | Con `mode: portal`, qué gateway elegir. Es `--authgroup` de openconnect: el mismo desplegable del cliente oficial |
 | `clientos` | `linux-64` (default), `linux`, `win`, `mac-intel`, `android`, `apple-ios` |
 | `interface` | Nombre de la interfaz del túnel (default `gpvpn0`) |
-| `extraArgs` | Argumentos extra para `openconnect`, editando el JSON a mano |
+| `extraArgs` | Argumentos extra para `openconnect`, editando el JSON a mano. Solo en forma larga (`--opcion=valor`), y sin las opciones que ejecutan comandos, leen más opciones de un archivo o exponen el cookie — ver abajo |
+
+### Qué no se admite en `extraArgs`
+
+Esos argumentos terminan en el argv de un proceso que corre como root, así que
+`gpvpn-tunnel` los filtra antes de pasárselos a `openconnect`:
+
+- **Forma corta rechazada entera.** `getopt` acepta el valor pegado (`-s/tmp/x`)
+  y el agrupamiento (`-qs /tmp/x`), así que no hay forma confiable de filtrarla.
+- **Opciones prohibidas**, comparadas por prefijo porque `getopt_long` resuelve
+  abreviaturas no ambiguas —`--csd-wrap` llega a `--csd-wrapper` igual—:
+  `--script`, `--script-tun`, `--csd-wrapper`, `--csd-user` (ejecutan comandos);
+  `--config`, `--xmlconfig` (leen más opciones de un archivo, por donde se
+  colaría cualquier otra); `--pid-file` (escritura arbitraria); `--cookie`,
+  `--cookieonly`, `--printcookie`, `--dump-http-traffic` (exponen el cookie);
+  `--interface`, `--os` (eluden la validación que el script ya hizo);
+  `--background` (rompe `Type=exec`).
 
 **No hay autodescubrimiento de gateways.** Seleccionar uno es trivial
 (`--authgroup`), pero enumerarlos implica autenticar contra el portal y parsear
