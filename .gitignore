@@ -3,3 +3,6 @@
 *.pkg.tar.xz
 pkg/
 src/
+
+# Documento de trabajo local: el plan de endurecimiento y mejoras
+PLAN.md
