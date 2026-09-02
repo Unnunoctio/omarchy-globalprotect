@@ -97,6 +97,27 @@ ensure_profiles() {
 
 profiles_json() { ensure_profiles; cat "$PROFILES"; }
 
+# Reescribe profiles.json aplicandole un programa jq. Recibe los argumentos de
+# jq (el filtro y sus --arg) y le agrega el archivo.
+#
+# El temporal va en el MISMO directorio a proposito: `mktemp` a secas lo crea en
+# /tmp, que suele ser tmpfs mientras $HOME esta en otro filesystem, y entre
+# filesystems `mv` deja de ser un rename atomico y pasa a ser copiar-y-borrar.
+# Un corte a mitad de camino truncaba los perfiles.
+edit_profiles() {
+  local tmp
+  ensure_profiles
+  tmp="$(mktemp -p "$CONFIG_DIR" .profiles.XXXXXX)" ||
+    die "no se pudo crear un temporal en $CONFIG_DIR"
+  chmod 600 "$tmp"
+  # Si jq falla, o deja el archivo vacio, los perfiles quedan como estaban.
+  if ! jq "$@" "$PROFILES" > "$tmp" || [[ ! -s $tmp ]]; then
+    rm -f "$tmp"
+    die "no se pudo actualizar $PROFILES"
+  fi
+  mv "$tmp" "$PROFILES"
+}
+
 profile_get() {
   profiles_json | jq -e --arg id "$1" '.profiles[] | select(.id == $id)'
 }
@@ -157,7 +178,11 @@ iface_ip() {
   if [[ -z $out ]]; then
     return 0
   fi
-  awk '{print $4}' <<<"$out" | cut -d/ -f1 | head -1
+  # Un solo awk y sin pipeline a proposito: con `head` cerrando temprano, el
+  # SIGPIPE rio arriba mas `pipefail` hacen que esta funcion retorne != 0, y
+  # como su salida se consume en asignaciones (ip="$(iface_ip ...)"), `set -e`
+  # tumbaba el script entero de forma intermitente.
+  awk 'NR == 1 { split($4, a, "/"); print a[1] }' <<<"$out"
 }
 
 current_iface() {
@@ -472,10 +497,8 @@ cmd_profile_add() {
   esac
   [[ $iface =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || die "nombre de interfaz invalido"
 
-  ensure_profiles
-  local tmp
-  tmp="$(mktemp)"
-  jq --arg id "$id" --arg name "${name:-$id}" --arg server "$server" \
+  edit_profiles \
+     --arg id "$id" --arg name "${name:-$id}" --arg server "$server" \
      --arg mode "$mode" --arg gateway "$gateway" --arg user "$user" \
      --arg clientos "$clientos" --arg iface "$iface" \
      '
@@ -487,8 +510,7 @@ cmd_profile_add() {
      };
      .profiles = ((.profiles // []) | map(select(.id != $id)) + [entry])
      | .defaultProfile = (.defaultProfile // $id)
-     ' "$PROFILES" > "$tmp"
-  mv "$tmp" "$PROFILES"
+     '
   echo "Perfil '$id' guardado."
 }
 
@@ -497,23 +519,17 @@ cmd_profile_rm() {
   [[ -n $id ]] || die "falta el id"
   ensure_profiles
   profile_get "$id" >/dev/null 2>&1 || die "no existe el perfil '$id'"
-  local tmp
-  tmp="$(mktemp)"
-  jq --arg id "$id" '
+  edit_profiles --arg id "$id" '
     .profiles = ((.profiles // []) | map(select(.id != $id)))
     | .defaultProfile = (if .defaultProfile == $id then (.profiles[0].id // null) else .defaultProfile end)
-    ' "$PROFILES" > "$tmp"
-  mv "$tmp" "$PROFILES"
+    '
   echo "Perfil '$id' borrado."
 }
 
 cmd_profile_default() {
   local id
   id="$(resolve_profile "${1-}")"
-  local tmp
-  tmp="$(mktemp)"
-  jq --arg id "$id" '.defaultProfile = $id' "$PROFILES" > "$tmp"
-  mv "$tmp" "$PROFILES"
+  edit_profiles --arg id "$id" '.defaultProfile = $id'
   echo "Perfil por defecto: $id"
 }
 
