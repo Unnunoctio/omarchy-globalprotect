@@ -315,7 +315,7 @@ cmd_status() {
       --arg state "$st" --arg profile "$id" --arg profileName "$name" \
       --arg interface "$iface" --arg ip "$ip" --arg since "$since" \
       --arg unit "$UNIT" --arg error "$err" \
-      --argjson profiles "$(profiles_json | jq '[.profiles[] | {id, name, server, mode, gateway}]')" \
+      --argjson profiles "$(profiles_json | jq '[.profiles[] | {id, name, server, mode, gateway, clientos, interface}]')" \
       --arg defaultProfile "$(default_profile_id)" \
       '{state: $state, profile: $profile, profileName: $profileName,
         interface: $interface, ip: $ip, since: $since, unit: $unit,

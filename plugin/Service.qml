@@ -47,7 +47,7 @@ Item {
   // Cual perfil pinta como "encendido". Conectada es el que reporta el CLI;
   // mientras negocia el CLI todavia no lo sabe, asi que vale el que pedimos.
   readonly property string activeProfileId: connected ? profileId : (busyState ? pendingProfile : "")
-  readonly property bool adding: addProcess.running
+  readonly property bool saving: saveProcess.running
   // Con `mode: gateway` el servidor ES el gateway. Con `mode: portal` el
   // servidor es el portal y el gateway real es el authgroup, que es un campo
   // aparte: mostrar el servidor como "Gateway" en ese caso era falso.
@@ -63,9 +63,9 @@ Item {
   // solo la primera merece una notificacion urgente. Un cambio de perfil baja y
   // sube el tunel, y tampoco tiene que avisar de la bajada.
   property string pendingProfile: ""
-  property string addError: ""
+  property string saveError: ""
 
-  signal profileAdded(string id)
+  signal profileSaved(string id)
   signal profileRemoved(string id)
 
   readonly property bool removing: removeProcess.running
@@ -230,28 +230,58 @@ Item {
       .replace(/^-+|-+$/g, "")
   }
 
-  function addProfile(name, server, mode) {
-    if (addProcess.running) return
-    var id = slug(name)
+  // Alta y edicion por el mismo camino. Con editId vacio da de alta derivando
+  // el id del nombre; con editId usa `profile edit`, que hace merge y por eso
+  // permite guardar sin repetir los campos que el formulario no pide.
+  function saveProfile(editId, name, server, mode, gateway, clientos, iface) {
+    if (saveProcess.running) return
+    var label = String(name || "").trim()
     var host = String(server || "").trim()
-    if (id === "" || host === "") {
-      addError = "Hace falta un nombre y un servidor"
+    if (label === "" || host === "") {
+      saveError = "Hace falta un nombre y un servidor"
       return
     }
-    // `gpvpn profile add` reemplaza sin preguntar; el formulario es de alta, no
-    // de edicion, asi que un id repetido se frena aca.
-    if (profileById(id)) {
-      addError = "Ya hay un perfil con el id \u0027" + id + "\u0027"
-      return
+
+    var args
+    var target = String(editId || "")
+    if (target !== "") {
+      args = ["gpvpn", "profile", "edit", "--id", target]
+      saveProcess.savedId = target
+    } else {
+      var id = slug(label)
+      if (id === "") {
+        saveError = "El nombre no produce un id válido"
+        return
+      }
+      // `profile add` reemplaza sin preguntar: un id repetido se frena aca.
+      if (profileById(id)) {
+        saveError = "Ya hay un perfil con el id \u0027" + id + "\u0027"
+        return
+      }
+      args = ["gpvpn", "profile", "add", "--id", id]
+      saveProcess.savedId = id
     }
-    addError = ""
-    addProcess.createdId = id
-    addProcess.command = ["gpvpn", "profile", "add",
-                          "--id", id,
-                          "--name", String(name).trim(),
-                          "--server", host,
-                          "--mode", String(mode || "gateway")]
-    addProcess.running = true
+
+    var wanted = String(mode || "gateway")
+    args = args.concat(["--name", label, "--server", host, "--mode", wanted])
+    // El gateway solo aplica al modo portal: al salir de portal se limpia, para
+    // no dejar un --authgroup colgado que despues confunda.
+    args = args.concat(["--gateway", wanted === "portal" ? String(gateway || "").trim() : ""])
+    args = args.concat(["--clientos", String(clientos || "linux-64")])
+    var ifname = String(iface || "").trim()
+    if (ifname !== "") args = args.concat(["--interface", ifname])
+
+    saveError = ""
+    saveProcess.command = args
+    saveProcess.running = true
+  }
+
+  function setDefaultProfile(id) {
+    if (defaultProcess.running) return
+    var target = String(id || "")
+    if (target === "" || target === defaultProfile) return
+    defaultProcess.command = ["gpvpn", "profile", "default", target]
+    defaultProcess.running = true
   }
 
   // Borrar es destructivo y el CLI no pregunta: quien llama tiene que haber
@@ -380,17 +410,30 @@ Item {
   }
 
   Process {
-    id: addProcess
+    id: saveProcess
     running: false
     command: []
-    property string createdId: ""
-    stderr: StdioCollector { id: addStderr; waitForEnd: true }
+    property string savedId: ""
+    stderr: StdioCollector { id: saveStderr; waitForEnd: true }
     onExited: function (exitCode) {
       if (exitCode === 0) {
-        root.addError = ""
-        root.profileAdded(addProcess.createdId)
+        root.saveError = ""
+        root.profileSaved(saveProcess.savedId)
       } else {
-        root.addError = root.elide(addStderr.text || "No se pudo crear el perfil")
+        root.saveError = root.elide(saveStderr.text || "No se pudo guardar el perfil")
+      }
+      root.refresh()
+    }
+  }
+
+  Process {
+    id: defaultProcess
+    running: false
+    command: []
+    stderr: StdioCollector { id: defaultStderr; waitForEnd: true }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) {
+        root.setError(defaultStderr.text || "No se pudo marcar el perfil por defecto")
       }
       root.refresh()
     }

@@ -20,6 +20,8 @@ Panel {
   // Fuente de verdad del dialogo de borrado: vacio = cerrado.
   property string pendingRemovalId: ""
   property string pendingRemovalName: ""
+  // Vacio = el formulario da de alta; con un id = edita ese perfil.
+  property string editingId: ""
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -83,19 +85,37 @@ Panel {
     vpn.removeProfile(id)
   }
 
+  function fillForm(p) {
+    nameField.text = p ? String(p.name || p.id || "") : ""
+    serverField.text = p ? String(p.server || "") : ""
+    modeGroup.value = p ? String(p.mode || "gateway") : "gateway"
+    gatewayField.text = p ? String(p.gateway || "") : ""
+    ifaceField.text = p ? String(p.interface || "") : ""
+    clientosDropdown.value = p ? String(p.clientos || "linux-64") : "linux-64"
+  }
+
   function openAddForm() {
+    editingId = ""
     addingProfile = true
-    vpn.addError = ""
-    nameField.text = ""
-    serverField.text = ""
-    modeGroup.value = "gateway"
+    vpn.saveError = ""
+    fillForm(null)
     setHeaderCursor()
+    Qt.callLater(function () { nameField.forceActiveFocus() })
+  }
+
+  function openEditForm(p) {
+    if (!p) return
+    editingId = String(p.id)
+    addingProfile = true
+    vpn.saveError = ""
+    fillForm(p)
     Qt.callLater(function () { nameField.forceActiveFocus() })
   }
 
   function closeAddForm() {
     addingProfile = false
-    vpn.addError = ""
+    editingId = ""
+    vpn.saveError = ""
     Qt.callLater(function () { keyCatcher.forceActiveFocus() })
   }
 
@@ -104,8 +124,9 @@ Panel {
     else openAddForm()
   }
 
-  function submitAddForm() {
-    vpn.addProfile(nameField.text, serverField.text, modeGroup.value)
+  function submitForm() {
+    vpn.saveProfile(editingId, nameField.text, serverField.text, modeGroup.value,
+                    gatewayField.text, clientosDropdown.value, ifaceField.text)
   }
 
   function moveCursor(dx, dy) {
@@ -154,7 +175,7 @@ Panel {
 
   Connections {
     target: vpn
-    function onProfileAdded(id) { root.closeAddForm() }
+    function onProfileSaved(id) { root.closeAddForm() }
     // Tras borrar, la lista se acorta: el cursor puede quedar fuera de rango.
     function onProfileRemoved(id) {
       root.profileIndex = Math.max(0, Math.min(root.profileIndex, vpn.profiles.length - 2))
@@ -236,6 +257,8 @@ Panel {
       anchors.fill: parent
       // Mientras se escribe en el formulario las teclas son texto, no atajos.
       blocked: nameField.activeFocus || serverField.activeFocus
+               || gatewayField.activeFocus || ifaceField.activeFocus
+               || clientosDropdown.popupOpen
       onMoveRequested: function (dx, dy) {
         if (root.pendingRemovalId !== "") {
           if (dx !== 0) removeConfirm.selectedIndex = removeConfirm.selectedIndex === 0 ? 1 : 0
@@ -268,6 +291,8 @@ Panel {
         var key = String(t || "").toLowerCase()
         if (key === "t") root.toggleVpn()
         else if (key === "n") root.toggleAddForm()
+        else if (key === "e") { if (root.focusSection === "profiles") root.openEditForm(root.selectedProfile()) }
+        else if (key === "d") { if (root.focusSection === "profiles" && root.selectedProfile()) vpn.setDefaultProfile(root.selectedProfile().id) }
         else if (key === "r") vpn.refresh()
         // `l` no llega hasta aca: PanelKeyCatcher lo gasta como flecha derecha.
         else if (key === "g") Quickshell.execDetached(["uwsm-app", "--", "foot", "-T", "GlobalProtect", "bash", "-c", "gpvpn logs -f"])
@@ -428,7 +453,7 @@ Panel {
             spacing: Style.space(8)
 
             PanelSectionHeader {
-              text: "NUEVO PERFIL"
+              text: root.editingId !== "" ? "EDITAR PERFIL" : "NUEVO PERFIL"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -456,7 +481,8 @@ Panel {
                 foreground: root.foreground
                 font.pixelSize: Style.font.bodySmall
                 verticalPadding: Style.space(4)
-                onAccepted: root.submitAddForm()
+                onAccepted: modeGroup.value === "portal" ? gatewayField.forceActiveFocus()
+                                                          : root.submitForm()
                 Keys.onEscapePressed: root.closeAddForm()
               }
             }
@@ -476,10 +502,55 @@ Panel {
               }
             }
 
+            // Solo aplica autenticando contra un portal: es el --authgroup de
+            // openconnect, el mismo desplegable del cliente oficial.
+            FormRow {
+              visible: modeGroup.value === "portal"
+              label: "Gateway"
+              TextField {
+                id: gatewayField
+                Layout.fillWidth: true
+                placeholderText: "el que elija el portal"
+                foreground: root.foreground
+                font.pixelSize: Style.font.bodySmall
+                verticalPadding: Style.space(4)
+                onAccepted: root.submitForm()
+                Keys.onEscapePressed: root.closeAddForm()
+              }
+            }
+
+            FormRow {
+              label: "Interfaz"
+              TextField {
+                id: ifaceField
+                Layout.fillWidth: true
+                placeholderText: "gpvpn0"
+                foreground: root.foreground
+                font.pixelSize: Style.font.bodySmall
+                verticalPadding: Style.space(4)
+                onAccepted: root.submitForm()
+                Keys.onEscapePressed: root.closeAddForm()
+              }
+            }
+
+            FormRow {
+              label: "Sistema"
+              Dropdown {
+                id: clientosDropdown
+                Layout.fillWidth: true
+                showLabel: false
+                value: "linux-64"
+                options: ["linux-64", "linux", "win", "mac-intel", "android", "apple-ios"]
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onChanged: function (v) { clientosDropdown.value = v }
+              }
+            }
+
             Text {
-              visible: vpn.addError !== ""
+              visible: vpn.saveError !== ""
               width: parent.width
-              text: vpn.addError
+              text: vpn.saveError
               color: root.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -492,7 +563,7 @@ Panel {
 
               Text {
                 Layout.fillWidth: true
-                text: "el id sale del nombre"
+                text: root.editingId !== "" ? "el id no cambia al editar" : "el id sale del nombre"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -512,15 +583,15 @@ Panel {
                 id: saveButton
                 readonly property bool ready: nameField.text.trim() !== ""
                                               && serverField.text.trim() !== ""
-                                              && !vpn.adding
-                text: vpn.adding ? "Guardando…" : "Guardar"
+                                              && !vpn.saving
+                text: vpn.saving ? "Guardando…" : "Guardar"
                 bordered: true
                 selected: ready
                 opacity: ready ? 1.0 : 0.45
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: Style.font.bodySmall
-                onClicked: if (ready) root.submitAddForm()
+                onClicked: if (ready) root.submitForm()
               }
             }
           }
@@ -582,7 +653,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "n nuevo · x borrar · t conectar · r refrescar · g logs · esc cerrar"
+            text: "n nuevo · e editar · x borrar · d default · t conectar · r refrescar · g logs · esc"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -696,7 +767,8 @@ Panel {
       }
 
       Text {
-        visible: profileRow.isDefault && !profileRow.isActive
+        // Cede el lugar a los botones cuando el cursor esta sobre la fila.
+        visible: profileRow.isDefault && !profileRow.isActive && !profileRow.hasCursor
         text: "default"
         color: root.dim
         font.family: root.fontFamily
@@ -704,8 +776,31 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
       }
 
-      // Solo aparece con el cursor sobre la fila, para no cargar la lista. El
-      // perfil activo no lo ofrece: primero hay que desconectar.
+      // Los tres aparecen solo con el cursor sobre la fila, para no cargar la
+      // lista con acciones que casi nunca se usan.
+      PanelActionButton {
+        visible: profileRow.hasCursor && !profileRow.isDefault
+        iconText: "󰐃"
+        tooltipText: "Marcar por defecto"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        hasCursor: false
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: vpn.setDefaultProfile(profileRow.profile ? profileRow.profile.id : "")
+      }
+
+      PanelActionButton {
+        visible: profileRow.hasCursor
+        iconText: "󰏫"
+        tooltipText: "Editar perfil"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        hasCursor: false
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.openEditForm(profileRow.profile)
+      }
+
+      // El perfil activo no ofrece borrado: primero hay que desconectar.
       PanelActionButton {
         visible: profileRow.hasCursor && !profileRow.isActive
         iconText: "󰩹"
