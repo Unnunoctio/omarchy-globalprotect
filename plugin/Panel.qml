@@ -90,7 +90,6 @@ Panel {
     serverField.text = p ? String(p.server || "") : ""
     modeGroup.value = p ? String(p.mode || "gateway") : "gateway"
     gatewayField.text = p ? String(p.gateway || "") : ""
-    ifaceField.text = p ? String(p.interface || "") : ""
     clientosDropdown.value = p ? String(p.clientos || "linux-64") : "linux-64"
   }
 
@@ -126,7 +125,7 @@ Panel {
 
   function submitForm() {
     vpn.saveProfile(editingId, nameField.text, serverField.text, modeGroup.value,
-                    gatewayField.text, clientosDropdown.value, ifaceField.text)
+                    gatewayField.text, clientosDropdown.value)
   }
 
   function moveCursor(dx, dy) {
@@ -257,8 +256,7 @@ Panel {
       anchors.fill: parent
       // Mientras se escribe en el formulario las teclas son texto, no atajos.
       blocked: nameField.activeFocus || serverField.activeFocus
-               || gatewayField.activeFocus || ifaceField.activeFocus
-               || clientosDropdown.popupOpen
+               || gatewayField.activeFocus || clientosDropdown.popupOpen
       onMoveRequested: function (dx, dy) {
         if (root.pendingRemovalId !== "") {
           if (dx !== 0) removeConfirm.selectedIndex = removeConfirm.selectedIndex === 0 ? 1 : 0
@@ -511,20 +509,6 @@ Panel {
                 id: gatewayField
                 Layout.fillWidth: true
                 placeholderText: "el que elija el portal"
-                foreground: root.foreground
-                font.pixelSize: Style.font.bodySmall
-                verticalPadding: Style.space(4)
-                onAccepted: root.submitForm()
-                Keys.onEscapePressed: root.closeAddForm()
-              }
-            }
-
-            FormRow {
-              label: "Interfaz"
-              TextField {
-                id: ifaceField
-                Layout.fillWidth: true
-                placeholderText: "gpvpn0"
                 foreground: root.foreground
                 font.pixelSize: Style.font.bodySmall
                 verticalPadding: Style.space(4)

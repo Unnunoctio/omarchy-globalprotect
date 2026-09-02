@@ -233,7 +233,11 @@ Item {
   // Alta y edicion por el mismo camino. Con editId vacio da de alta derivando
   // el id del nombre; con editId usa `profile edit`, que hace merge y por eso
   // permite guardar sin repetir los campos que el formulario no pide.
-  function saveProfile(editId, name, server, mode, gateway, clientos, iface) {
+  // La interfaz del tunel no se edita desde el panel: con un solo tunel a la
+  // vez nunca hay dos que puedan chocar, asi que renombrarla solo sirve para
+  // reglas de firewall fijadas al nombre. Queda en el JSON, y una edicion desde
+  // el panel no la toca.
+  function saveProfile(editId, name, server, mode, gateway, clientos) {
     if (saveProcess.running) return
     var label = String(name || "").trim()
     var host = String(server || "").trim()
@@ -268,8 +272,6 @@ Item {
     // no dejar un --authgroup colgado que despues confunda.
     args = args.concat(["--gateway", wanted === "portal" ? String(gateway || "").trim() : ""])
     args = args.concat(["--clientos", String(clientos || "linux-64")])
-    var ifname = String(iface || "").trim()
-    if (ifname !== "") args = args.concat(["--interface", ifname])
 
     saveError = ""
     saveProcess.command = args

@@ -358,6 +358,24 @@ cmd_list() {
   done <<<"$rows"
 }
 
+# gp-saml-gui manda su PROPIO clientos en el prelogin al portal, y usa otro
+# vocabulario que el --os de openconnect: Linux/Mac/Windows contra
+# linux-64/mac-intel/win. Son dos cosas distintas en dos momentos distintos, y
+# el portal mira la primera: es ahi donde rechaza a los clientes Linux. Sin este
+# mapeo, poner clientos=win en el perfil solo cambiaba lo que se reporta DESPUES
+# de autenticar, o sea justo donde ya no importa.
+#
+# android y apple-ios no tienen equivalente en gp-saml-gui (solo admite esos
+# tres): para ellos el prelogin sigue con el default y solo cambia el tunel.
+saml_clientos() {
+  case "$1" in
+    linux | linux-64) printf 'Linux' ;;
+    win)              printf 'Windows' ;;
+    mac-intel)        printf 'Mac' ;;
+    *)                printf '' ;;
+  esac
+}
+
 # --- conectar ------------------------------------------------------------
 
 cmd_connect() {
@@ -411,6 +429,11 @@ cmd_connect() {
   # de lanzar openconnect el mismo, que es lo que permite separar las dos fases.
   local saml_args=(-g)
   [[ $mode == portal ]] && saml_args=(-p)
+  local saml_os
+  saml_os="$(saml_clientos "${clientos:-linux-64}")"
+  if [[ -n $saml_os ]]; then
+    saml_args+=(--clientos "$saml_os")
+  fi
 
   local saml
   # WEBKIT_DISABLE_COMPOSITING_MODE y GDK_BACKEND=x11 evitan que la ventana de
@@ -569,7 +592,9 @@ opciones de add y edit:
   --mode gateway|portal  Contra qué autentica gp-saml-gui (default: gateway)
   --gateway NOMBRE     Gateway a elegir cuando el modo es portal (--authgroup)
   --user USUARIO       Usuario a pasarle a openconnect (normalmente lo da el SAML)
-  --clientos VALOR     linux-64 (default), linux, win, mac-intel, android, apple-ios
+  --clientos VALOR     SO que se le reporta al portal y al gateway. No describe
+                       tu maquina: sirve para pasar portales que rechazan Linux.
+                       linux-64 (default), linux, win, mac-intel, android, apple-ios
   --interface NOMBRE   Interfaz del túnel (default: gpvpn0)
 USAGE
 }

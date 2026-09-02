@@ -100,9 +100,47 @@ gpvpn list
 |---|---|
 | `mode` | `gateway` (default) autentica directo contra el gateway; `portal` contra el portal |
 | `gateway` | Con `mode: portal`, qué gateway elegir. Es `--authgroup` de openconnect: el mismo desplegable del cliente oficial |
-| `clientos` | `linux-64` (default), `linux`, `win`, `mac-intel`, `android`, `apple-ios` |
-| `interface` | Nombre de la interfaz del túnel (default `gpvpn0`) |
+| `clientos` | Qué sistema **se le reporta** al portal y al gateway. `linux-64` (default), `linux`, `win`, `mac-intel`, `android`, `apple-ios` — ver abajo |
+| `interface` | Nombre de la interfaz del túnel (default `gpvpn0`). **Solo por JSON**, ver abajo |
 | `extraArgs` | Argumentos extra para `openconnect`, editando el JSON a mano. Solo en forma larga (`--opcion=valor`), y sin las opciones que ejecutan comandos, leen más opciones de un archivo o exponen el cookie — ver abajo |
+
+### `clientos` no describe tu máquina
+
+Es el sistema que el cliente **declara**, no el que corre. Existe porque muchos
+portales corporativos rechazan clientes Linux, y la salida es reportarse como
+otra cosa. La propia `gp-saml-gui`, cuando el portal no devuelve las etiquetas
+SAML, sugiere exactamente eso: *"Spoof an officially supported OS"*.
+
+Por eso **no se autodetecta**: el valor de tenerlo es poder no decir la verdad.
+
+El valor viaja en dos momentos, con vocabularios distintos, y `gpvpn` los
+mantiene en sincronía a partir de un solo campo:
+
+| Momento | Quién lo manda | Vocabulario |
+|---|---|---|
+| Prelogin al portal, antes del SAML | `gp-saml-gui --clientos` | `Linux`, `Mac`, `Windows` |
+| Handshake del túnel, ya autenticado | `openconnect --os` | `linux-64`, `win`, `mac-intel`… |
+
+**El que decide si te dejan entrar es el primero.** `android` y `apple-ios` no
+tienen equivalente ahí —`gp-saml-gui` solo admite esos tres—, así que con ellos
+el prelogin va con su valor por defecto y solo cambia lo que reporta el túnel.
+
+### `interface` se edita a mano, a propósito
+
+No está en el formulario del panel. Hay **un solo túnel a la vez**, igual que en
+el cliente oficial, así que dos interfaces nunca compiten y renombrarla no
+resuelve ningún conflicto. El único uso real es fijar reglas de firewall o
+routing al nombre (`nft … oif gpvpn0`), que es algo que se hace una vez y no
+desde un panel.
+
+Si lo necesitás, va directo al JSON:
+
+```json
+{ "id": "trabajo", "server": "vpn.empresa.com", "interface": "vpn-trabajo" }
+```
+
+o por CLI: `gpvpn profile edit --id trabajo --interface vpn-trabajo`.
+Una edición desde el panel **no lo toca**.
 
 ### Qué no se admite en `extraArgs`
 
@@ -166,14 +204,19 @@ gpvpn setup      # instala unidad systemd y regla polkit vía pkexec
   túnel, encenderlo sobre otro cambia de perfil. El punto lleno marca el activo.
   El switch se enciende apenas se pide la conexión, no recién cuando el túnel
   está arriba.
-- El `+` del encabezado da de alta un perfil sin salir del panel. Enter salta al
-  campo siguiente y guarda en el último; `esc` cierra el formulario.
+- El `+` del encabezado da de alta un perfil, y el lápiz de cada fila lo abre en
+  modo edición con los campos cargados. El formulario cubre nombre, servidor,
+  modo, gateway (solo en modo portal) y sistema; `interface` y `extraArgs` van
+  por JSON. Enter salta al campo siguiente y guarda en el último; `esc` cierra.
+- Cada fila permite además marcarla por defecto y borrarla, con confirmación. El
+  perfil conectado no ofrece borrado: hay que bajarlo primero.
 - Conectada, el panel muestra gateway, interfaz, IP y hace cuánto está arriba.
   Desconectada no muestra nada entre el encabezado y la lista.
 - El escudo de la barra va relleno con la VPN arriba, en contorno tenue abajo, y
   late mientras negocia.
 - Atajos: `j`/`k` o flechas para moverte, `enter` para activar, `n` nuevo
-  perfil, `t` conectar/desconectar, `r` refrescar, `g` logs, `esc` cerrar.
+  perfil, `e` editar, `d` marcar por defecto, `x` borrar, `t`
+  conectar/desconectar, `r` refrescar, `g` logs, `esc` cerrar.
   (`h`/`j`/`k`/`l` los consume el navegador de teclado del panel como flechas,
   por eso los logs están en `g`.)
 - Avisa al conectar, al fallar, y cuando el túnel se cae solo. Una desconexión
