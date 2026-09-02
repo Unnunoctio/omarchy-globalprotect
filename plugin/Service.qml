@@ -31,6 +31,10 @@ Item {
   property string ip: ""
   property string since: ""
   property string lastError: ""
+  // El texto entero, aparte del elidido: un error de certificado o de HIP no
+  // entra en 160 caracteres y el detalle quedaba solo en los logs.
+  property string lastErrorFull: ""
+  readonly property bool errorTruncated: lastErrorFull.length > lastError.length
   property string actionStatus: ""
 
   readonly property bool connected: state === "connected"
@@ -44,12 +48,13 @@ Item {
   // mientras negocia el CLI todavia no lo sabe, asi que vale el que pedimos.
   readonly property string activeProfileId: connected ? profileId : (busyState ? pendingProfile : "")
   readonly property bool adding: addProcess.running
-  // El JSON de gpvpn no trae el gateway suelto: sale del servidor del perfil
-  // conectado, o del que se levantaria si se pulsa el switch.
-  readonly property string gateway: {
-    var p = profileById(targetProfile())
-    return p ? String(p.server || "") : ""
-  }
+  // Con `mode: gateway` el servidor ES el gateway. Con `mode: portal` el
+  // servidor es el portal y el gateway real es el authgroup, que es un campo
+  // aparte: mostrar el servidor como "Gateway" en ese caso era falso.
+  readonly property var targetProfileObj: profileById(targetProfile())
+  readonly property string serverHost: targetProfileObj ? String(targetProfileObj.server || "") : ""
+  readonly property string profileMode: targetProfileObj ? String(targetProfileObj.mode || "gateway") : "gateway"
+  readonly property string gatewayName: targetProfileObj ? String(targetProfileObj.gateway || "") : ""
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 300)
   readonly property bool notifyOnDisconnect: setting("notifyOnDisconnect", true) === true
@@ -82,9 +87,9 @@ Item {
   function stateLabel() {
     switch (state) {
       case "connected": return profileName !== "" ? profileName : "Conectada"
-      case "connecting": return "Levantando el tunel…"
+      case "connecting": return "Levantando el túnel…"
       case "authenticating": return "Esperando el login SAML…"
-      case "failed": return "Fallo la conexion"
+      case "failed": return "Falló la conexión"
       case "disconnected": return hasProfiles ? "Desconectada" : "Sin perfiles"
       default: return "Sin datos"
     }
@@ -133,7 +138,7 @@ Item {
     try {
       parsed = JSON.parse(String(raw || ""))
     } catch (e) {
-      lastError = "No se pudo leer el estado de la VPN"
+      setError("No se pudo leer el estado de la VPN")
       return
     }
     installed = true
@@ -145,7 +150,7 @@ Item {
     ip = String(parsed.ip || "")
     since = String(parsed.since || "")
     var incoming = String(parsed.state || "unknown")
-    lastError = incoming === "failed" ? String(parsed.error || "") : ""
+    setError(incoming === "failed" ? parsed.error : "")
     setState(incoming)
   }
 
@@ -165,14 +170,14 @@ Item {
       _userInitiatedStop = false
       _switchingTo = ""
       pendingProfile = ""
-      notify("Fallo la VPN", lastError !== "" ? lastError : "El tunel no pudo levantarse", "critical")
+      notify("Falló la VPN", lastError !== "" ? lastError : "El túnel no pudo levantarse", "critical")
     } else if (next === "disconnected") {
       pendingProfile = ""
       if (previous !== "connected") return
       if (_userInitiatedStop || _switchingTo !== "") {
         _userInitiatedStop = false
       } else if (notifyOnDisconnect) {
-        notify("VPN desconectada", "El tunel se cayo", "critical")
+        notify("VPN desconectada", "El túnel se cayó", "critical")
       }
     }
   }
@@ -186,7 +191,7 @@ Item {
     _userInitiatedStop = false
     _switchingTo = connected && target !== profileId ? target : ""
     pendingProfile = target
-    lastError = ""
+    setError("")
     var p = profileById(target)
     actionStatus = "Abriendo el login SAML" + (p ? " de " + p.name : "") + "…"
     // El estado optimista evita que el switch vuelva atras en el hueco entre el
@@ -202,7 +207,7 @@ Item {
     _userInitiatedStop = true
     _switchingTo = ""
     pendingProfile = ""
-    actionStatus = "Bajando el tunel…"
+    actionStatus = "Bajando el túnel…"
     disconnectProcess.command = ["gpvpn", "disconnect"]
     disconnectProcess.running = true
     fastPoll.restart()
@@ -251,6 +256,13 @@ Item {
     return value.length > 160 ? value.substring(0, 157) + "…" : value
   }
 
+  // Unico camino para fijar un error: guarda el texto entero y publica el
+  // recortado, para que los dos no se puedan desincronizar.
+  function setError(text) {
+    lastErrorFull = String(text || "").replace(/\s+/g, " ").trim()
+    lastError = elide(lastErrorFull)
+  }
+
   Component.onCompleted: refresh()
 
   Timer {
@@ -295,16 +307,16 @@ Item {
       // instalado": el resto son fallos de un CLI que si corrio.
       if (exitCode === root.exitNotFound) {
         root.installed = false
-        root.lastError = "No se encontró el CLI gpvpn en el PATH"
+        root.setError("No se encontró el CLI gpvpn en el PATH")
       } else if (exitCode === root.exitNoBackend) {
         root.installed = false
-        root.lastError = "Falta el backend; instalalo con: gpvpn setup"
+        root.setError("Falta el backend; instálalo con: gpvpn setup")
       } else if (exitCode === root.exitBadConfig) {
         root.installed = true
-        root.lastError = "El archivo de perfiles no es JSON válido"
+        root.setError("El archivo de perfiles no es JSON válido")
       } else {
         root.installed = true
-        root.lastError = "gpvpn status falló (código " + exitCode + ")"
+        root.setError("gpvpn status falló (código " + exitCode + ")")
       }
     }
   }
@@ -323,9 +335,9 @@ Item {
         // sondeo rapido, y no se notifica nada.
         root.actionStatus = "El túnel sigue negociando…"
       } else {
-        root.lastError = exitCode === root.exitNoProfiles
-                         ? "No hay perfiles configurados"
-                         : root.elide(connectStderr.text || "No se pudo conectar")
+        root.setError(exitCode === root.exitNoProfiles
+                      ? "No hay perfiles configurados"
+                      : (connectStderr.text || "No se pudo conectar"))
         root.actionStatus = ""
         root._switchingTo = ""
         root.notify("No se pudo conectar la VPN", root.lastError, "critical")
@@ -360,7 +372,7 @@ Item {
     onExited: function (exitCode) {
       if (exitCode !== 0) {
         root._userInitiatedStop = false
-        root.lastError = root.elide(disconnectStderr.text || "No se pudo desconectar")
+        root.setError(disconnectStderr.text || "No se pudo desconectar")
       }
       root.actionStatus = ""
       root.refresh()

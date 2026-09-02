@@ -75,7 +75,7 @@ ensure_cookie_jar() {
   install -d -m 700 "$STATE_DIR"
   if [[ ! -e $COOKIE_JAR && -f $LEGACY_COOKIE_JAR ]]; then
     if mv "$LEGACY_COOKIE_JAR" "$COOKIE_JAR" 2>/dev/null; then
-      echo "gpvpn: sesion del IdP movida a $COOKIE_JAR (modo 600)" >&2
+      echo "gpvpn: sesión del IdP movida a $COOKIE_JAR (modo 600)" >&2
     fi
   fi
   harden_cookie_jar
@@ -113,7 +113,7 @@ profiles_json() { ensure_profiles; cat "$PROFILES"; }
 validate_profiles() {
   ensure_profiles
   jq -e . "$PROFILES" >/dev/null 2>&1 ||
-    die_as "$EX_BADCONFIG" "$PROFILES no es JSON valido"
+    die_as "$EX_BADCONFIG" "$PROFILES no es JSON válido"
 }
 
 # Reescribe profiles.json aplicandole un programa jq. Recibe los argumentos de
@@ -195,7 +195,7 @@ ensure_rundir() { install -d -m 700 "$RUNDIR"; }
 check_rundir() {
   local expected="/run/user/${UID_SELF}/gpvpn"
   [[ $RUNDIR == "$expected" ]] && return 0
-  die "el params se escribiria en $RUNDIR pero el tunel lo lee de $expected; revisa XDG_RUNTIME_DIR"
+  die "el params se escribiría en $RUNDIR pero el túnel lo lee de $expected; revisa XDG_RUNTIME_DIR"
 }
 
 # Serializa connect/disconnect. El widget y una terminal pueden pedir cosas a la
@@ -205,7 +205,7 @@ check_rundir() {
 lock_or_die() {
   ensure_rundir
   exec 9>"$RUNDIR/lock"
-  flock -n 9 || die "ya hay otra operacion de gpvpn en curso"
+  flock -n 9 || die "ya hay otra operación de gpvpn en curso"
 }
 
 # El marker guarda el PID del login en curso. El trap cubre la salida normal y
@@ -315,7 +315,7 @@ cmd_status() {
       --arg state "$st" --arg profile "$id" --arg profileName "$name" \
       --arg interface "$iface" --arg ip "$ip" --arg since "$since" \
       --arg unit "$UNIT" --arg error "$err" \
-      --argjson profiles "$(profiles_json | jq '[.profiles[] | {id, name, server, mode}]')" \
+      --argjson profiles "$(profiles_json | jq '[.profiles[] | {id, name, server, mode, gateway}]')" \
       --arg defaultProfile "$(default_profile_id)" \
       '{state: $state, profile: $profile, profileName: $profileName,
         interface: $interface, ip: $ip, since: $since, unit: $unit,
@@ -423,7 +423,7 @@ cmd_connect() {
                    "${saml_args[@]}" "$server" 2>"$ERROR_FILE")"; then
     harden_cookie_jar
     redact_error_file
-    die "el login SAML fallo: $(tail -c 300 "$ERROR_FILE" | redact_secrets)"
+    die "el login SAML falló: $(tail -c 300 "$ERROR_FILE" | redact_secrets)"
   fi
   harden_cookie_jar
   redact_error_file
@@ -446,10 +446,10 @@ cmd_connect() {
   while IFS= read -r line; do
     [[ -z $line ]] && continue
     [[ $line =~ $saml_re ]] ||
-      die "gp-saml-gui devolvio una salida con una forma inesperada; no se evalua"
+      die "gp-saml-gui devolvió una salida con una forma inesperada; no se evalúa"
   done <<<"$saml"
   eval "$saml"
-  [[ -n ${HOST-} && -n ${COOKIE-} ]] || die "gp-saml-gui no devolvio un cookie"
+  [[ -n ${HOST-} && -n ${COOKIE-} ]] || die "gp-saml-gui no devolvió un cookie"
 
   (
     umask 077
@@ -489,7 +489,7 @@ cmd_connect() {
     # La unidad murio: eso si es un fallo, y se reporta como tal enseguida.
     if [[ "$(unit_state)" == failed ]]; then
       dump_unit_log
-      die "el tunel fallo al levantar; revisa: gpvpn logs"
+      die "el túnel falló al levantar; revisa: gpvpn logs"
     fi
     sleep 0.5
   done
@@ -499,7 +499,7 @@ cmd_connect() {
   # widget disparaba una notificacion roja por una conexion que despues
   # levantaba sola. Se sale con EX_PROGRESS y no se baja nada.
   dump_unit_log
-  die_as "$EX_PROGRESS" "el tunel sigue negociando; mira: gpvpn status"
+  die_as "$EX_PROGRESS" "el túnel sigue negociando; mira: gpvpn status"
 }
 
 dump_unit_log() {
@@ -542,7 +542,7 @@ cmd_logs() {
 
 profile_usage() {
   cat <<'USAGE'
-uso: gpvpn profile <accion>
+uso: gpvpn profile <acción>
 
   add --id ID --server HOST [opciones]   Crea o reemplaza un perfil
   rm ID                                   Borra un perfil
@@ -551,11 +551,11 @@ uso: gpvpn profile <accion>
 
 opciones de add:
   --name NOMBRE        Etiqueta visible (default: el id)
-  --mode gateway|portal  Contra que autentica gp-saml-gui (default: gateway)
+  --mode gateway|portal  Contra qué autentica gp-saml-gui (default: gateway)
   --gateway NOMBRE     Gateway a elegir cuando el modo es portal (--authgroup)
   --user USUARIO       Usuario a pasarle a openconnect (normalmente lo da el SAML)
   --clientos VALOR     linux-64 (default), linux, win, mac-intel, android, apple-ios
-  --interface NOMBRE   Interfaz del tunel (default: gpvpn0)
+  --interface NOMBRE   Interfaz del túnel (default: gpvpn0)
 USAGE
 }
 
@@ -572,19 +572,19 @@ cmd_profile_add() {
       --clientos) clientos="$2"; shift 2 ;;
       --interface) iface="$2"; shift 2 ;;
       -h | --help) profile_usage; return 0 ;;
-      *) die_as "$EX_USAGE" "opcion desconocida: $1" ;;
+      *) die_as "$EX_USAGE" "opción desconocida: $1" ;;
     esac
   done
 
   [[ -n $id ]] || die_as "$EX_USAGE" "falta --id"
   [[ -n $server ]] || die_as "$EX_USAGE" "falta --server"
-  [[ $id =~ ^[a-zA-Z0-9_-]+$ ]] || die "el id solo admite letras, numeros, guion y guion bajo"
+  [[ $id =~ ^[a-zA-Z0-9_-]+$ ]] || die "el id solo admite letras, números, guion y guion bajo"
   case "$mode" in gateway | portal) ;; *) die "--mode debe ser gateway o portal" ;; esac
   case "$clientos" in
     linux | linux-64 | win | mac-intel | android | apple-ios) ;;
-    *) die "--clientos invalido: $clientos" ;;
+    *) die "--clientos inválido: $clientos" ;;
   esac
-  [[ $iface =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || die "nombre de interfaz invalido"
+  [[ $iface =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || die "nombre de interfaz inválido"
 
   edit_profiles \
      --arg id "$id" --arg name "${name:-$id}" --arg server "$server" \
@@ -642,7 +642,7 @@ cmd_setup() {
   if [[ ${1-} != --force ]] &&
      systemctl cat gpvpn@.service >/dev/null 2>&1 &&
      [[ -x /usr/lib/gpvpn/gpvpn-tunnel ]]; then
-    echo "El backend ya esta instalado (usa --force para reinstalarlo)."
+    echo "El backend ya está instalado (usa --force para reinstalarlo)."
     return 0
   fi
   here="$(dirname "$(dirname "$(readlink -f "$0")")")"
@@ -664,19 +664,19 @@ usage() {
   cat <<'USAGE'
 uso: gpvpn <comando>
 
-  connect [perfil]     Login SAML y levanta el tunel
-  disconnect           Baja el tunel y borra el cookie
-  toggle [perfil]      Conecta o desconecta segun el estado
+  connect [perfil]     Login SAML y levanta el túnel
+  disconnect           Baja el túnel y borra el cookie
+  toggle [perfil]      Conecta o desconecta según el estado
   status [--json]      Estado actual (--json es lo que consume el widget)
   list                 Perfiles configurados
-  profile <accion>     add / rm / default (ver: gpvpn profile --help)
-  logs [args]          Journal de la unidad del tunel
+  profile <acción>     add / rm / default (ver: gpvpn profile --help)
+  logs [args]          Journal de la unidad del túnel
   setup                Instala unidad systemd y regla polkit (pide root)
 
 Perfiles en ~/.config/gpvpn/profiles.json
 
-Codigos de salida:
-  0  ok                     3  en curso (el tunel sigue negociando)
+Códigos de salida:
+  0  ok                     3  en curso (el túnel sigue negociando)
   1  error                  4  no hay perfiles configurados
   2  uso incorrecto         5  falta el backend (gpvpn setup)
                             6  profiles.json ilegible

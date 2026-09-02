@@ -16,6 +16,7 @@ Panel {
   property string focusSection: "header"
   property int profileIndex: 0
   property bool addingProfile: false
+  property bool errorExpanded: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -112,6 +113,7 @@ Panel {
     focusSection = "header"
     profileIndex = 0
     addingProfile = false
+    errorExpanded = false
     vpn.refresh()
     Qt.callLater(function () { keyCatcher.forceActiveFocus() })
   }
@@ -143,6 +145,21 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
+    // Lo que antes obligaba a abrir el panel para verlo. BarIconButton extiende
+    // WidgetButton, que ya resuelve el tooltip contra la barra.
+    tooltipText: {
+      if (!vpn.installed) return "GlobalProtect · backend no disponible"
+      if (vpn.state === "connected") {
+        var parts = [vpn.profileName !== "" ? vpn.profileName : "Conectada"]
+        if (vpn.ip !== "") parts.push(vpn.ip)
+        if (uptime.text !== "") parts.push("hace " + uptime.text)
+        return parts.join(" · ")
+      }
+      if (vpn.state === "connecting") return "GlobalProtect · levantando el túnel…"
+      if (vpn.state === "authenticating") return "GlobalProtect · esperando el login SAML…"
+      if (vpn.state === "failed") return "GlobalProtect · falló la conexión"
+      return vpn.hasProfiles ? "GlobalProtect · desconectada" : "GlobalProtect · sin perfiles"
+    }
     iconComponent: Component {
       Item {
         ShieldIcon {
@@ -261,14 +278,39 @@ Panel {
             }
           }
 
-          Text {
+          Column {
             visible: vpn.actionStatus !== "" || vpn.lastError !== ""
             width: parent.width
-            text: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
-            color: vpn.lastError !== "" && vpn.actionStatus === "" ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
+            spacing: Style.space(2)
+
+            Text {
+              width: parent.width
+              text: vpn.actionStatus !== "" ? vpn.actionStatus
+                    : (root.errorExpanded ? vpn.lastErrorFull : vpn.lastError)
+              color: vpn.lastError !== "" && vpn.actionStatus === "" ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            // Un error de certificado o de HIP no entra en 160 caracteres, y el
+            // detalle quedaba solo en `g` -> logs.
+            Text {
+              visible: vpn.actionStatus === "" && vpn.errorTruncated
+              text: root.errorExpanded ? "ver menos" : "ver más"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.underline: expandArea.containsMouse
+
+              MouseArea {
+                id: expandArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.errorExpanded = !root.errorExpanded
+              }
+            }
           }
 
           PanelSeparator {
@@ -281,10 +323,17 @@ Panel {
             width: parent.width
             spacing: Style.spacing.labelGap
 
+            // Con modo portal se muestran los dos: el portal contra el que se
+            // autentica y el gateway que se eligio dentro de el.
             InfoPair {
-              visible: vpn.gateway !== ""
+              visible: vpn.serverHost !== ""
+              label: vpn.profileMode === "portal" ? "Portal" : "Servidor"
+              value: vpn.serverHost
+            }
+            InfoPair {
+              visible: vpn.profileMode === "portal"
               label: "Gateway"
-              value: vpn.gateway
+              value: vpn.gatewayName !== "" ? vpn.gatewayName : "automático"
             }
             InfoPair { label: "Interfaz"; value: vpn.interfaceName }
             InfoPair {
@@ -427,7 +476,7 @@ Panel {
             Text {
               visible: !vpn.hasProfiles
               width: parent.width
-              text: "No hay perfiles configurados.\nAgregá uno con el botón + de arriba."
+              text: "No hay perfiles configurados.\nAgrega uno con el botón + de arriba."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -456,7 +505,7 @@ Panel {
           Text {
             visible: !vpn.installed
             width: parent.width
-            text: "No se encontró el CLI `gpvpn`.\nInstalá el backend con: gpvpn setup"
+            text: "No se encontró el CLI `gpvpn`.\nInstala el backend con: gpvpn setup"
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -484,9 +533,11 @@ Panel {
     property string text: ""
   }
 
+  // Corre siempre que haya tunel, no solo con el panel abierto: el tooltip de
+  // la barra tambien muestra el uptime.
   Timer {
     interval: 1000
-    running: root.opened && vpn.connected
+    running: vpn.connected
     repeat: true
     triggeredOnStart: true
     onTriggered: uptime.text = vpn.uptimeText()
