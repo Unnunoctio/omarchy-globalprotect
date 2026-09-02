@@ -166,6 +166,18 @@ profile_iface() {
 
 ensure_rundir() { install -d -m 700 "$RUNDIR"; }
 
+# El tunel corre como root y deriva la ruta del params del uid, no de una
+# variable de entorno del usuario: aceptar una ruta del llamador seria darle a
+# root un puntero arbitrario. La contra es que las dos rutas tienen que
+# coincidir, y si no coinciden es mejor decirlo aca -nombrando las dos- que
+# dejar que el tunel muera con un "no hay parametros" que apunta a otro lado.
+# Solo se exige al conectar: status, list y profile no tocan el params.
+check_rundir() {
+  local expected="/run/user/${UID_SELF}/gpvpn"
+  [[ $RUNDIR == "$expected" ]] && return 0
+  die "el params se escribiria en $RUNDIR pero el tunel lo lee de $expected; revisa XDG_RUNTIME_DIR"
+}
+
 # Serializa connect/disconnect. El widget y una terminal pueden pedir cosas a la
 # vez, y dos connect en paralelo se pisan el params, el marker y el archivo de
 # perfil activo. `status` NO toma el lock a proposito: el widget lo pollea cada
@@ -297,24 +309,32 @@ cmd_status() {
 }
 
 cmd_list() {
-  local def cur id name server mode mark
+  local def cur live rows id name server mode mark
   def="$(default_profile_id)"
   cur="$(active_profile_id)"
-  if [[ -z "$(profile_ids)" ]]; then
+
+  # state() consulta systemctl y la interfaz: se resuelve una vez, no una por
+  # fila. Antes cada perfil costaba ademas tres jq y tres cat para leer tres
+  # campos del mismo archivo.
+  live=""
+  if [[ -n $cur ]] && [[ "$(state)" == connected ]]; then
+    live="$cur"
+  fi
+
+  rows="$(profiles_json | jq -r '
+    .profiles[] | [.id, (.name // "-"), (.server // "-"), (.mode // "gateway")] | @tsv')"
+  if [[ -z $rows ]]; then
     echo "No hay perfiles. Crea uno con: gpvpn profile add --help"
     return
   fi
+
   printf '%-3s %-14s %-24s %-32s %s\n' "" "ID" "NOMBRE" "SERVIDOR" "MODO"
-  while read -r id; do
-    [[ -z $id ]] && continue
-    name="$(profile_field "$id" name)"
-    server="$(profile_field "$id" server)"
-    mode="$(profile_field "$id" mode)"
+  while IFS=$'\t' read -r id name server mode; do
     mark=" "
     [[ $id == "$def" ]] && mark="*"
-    [[ $id == "$cur" && "$(state)" == connected ]] && mark="●"
-    printf '%-3s %-14s %-24s %-32s %s\n' "$mark" "$id" "${name:--}" "${server:--}" "${mode:-gateway}"
-  done < <(profile_ids)
+    [[ $id == "$live" ]] && mark="●"
+    printf '%-3s %-14s %-24s %-32s %s\n' "$mark" "$id" "$name" "$server" "$mode"
+  done <<<"$rows"
 }
 
 # --- conectar ------------------------------------------------------------
@@ -356,6 +376,7 @@ cmd_connect() {
   iface="$(profile_iface "$id")"
   [[ -n $server ]] || die "el perfil '$id' no tiene servidor"
 
+  check_rundir
   ensure_rundir
   ensure_cookie_jar
   new_error_file
