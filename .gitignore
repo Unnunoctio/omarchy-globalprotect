@@ -6,3 +6,6 @@ src/
 
 # Documento de trabajo local: el plan de endurecimiento y mejoras
 PLAN.md
+
+# Clon bare que makepkg deja al usar una fuente git+
+/omarchy-globalprotect/
