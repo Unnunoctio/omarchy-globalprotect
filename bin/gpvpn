@@ -162,6 +162,35 @@ profile_iface() {
   printf '%s' "${i:-$DEFAULT_IFACE}"
 }
 
+# --- runtime, lock y marker ----------------------------------------------
+
+ensure_rundir() { install -d -m 700 "$RUNDIR"; }
+
+# Serializa connect/disconnect. El widget y una terminal pueden pedir cosas a la
+# vez, y dos connect en paralelo se pisan el params, el marker y el archivo de
+# perfil activo. `status` NO toma el lock a proposito: el widget lo pollea cada
+# pocos segundos y no puede quedarse esperando.
+lock_or_die() {
+  ensure_rundir
+  exec 9>"$RUNDIR/lock"
+  flock -n 9 || die "ya hay otra operacion de gpvpn en curso"
+}
+
+# El marker guarda el PID del login en curso. El trap cubre la salida normal y
+# las senales, pero no un SIGKILL ni un cierre de sesion: sin esta comprobacion
+# un marker huerfano dejaba a state() devolviendo `authenticating` para siempre
+# -widget latiendo, connect negandose- sin forma de recuperarse desde la UI.
+auth_in_progress() {
+  [[ -f $AUTH_MARKER ]] || return 1
+  local pid
+  pid="$(cat "$AUTH_MARKER" 2>/dev/null || true)"
+  if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$AUTH_MARKER"
+  return 1
+}
+
 # --- estado --------------------------------------------------------------
 
 unit_state() { systemctl is-active "$UNIT" 2>/dev/null || true; }
@@ -198,7 +227,7 @@ current_iface() {
 # La unidad se pone activa apenas arranca openconnect, que todavia tarda en
 # negociar: el estado real lo define la interfaz.
 state() {
-  if [[ -f $AUTH_MARKER ]]; then
+  if auth_in_progress; then
     echo authenticating
     return
   fi
@@ -294,6 +323,10 @@ cmd_connect() {
   local id
   id="$(resolve_profile "${1-}")"
 
+  # El lock va antes de mirar el estado: entre el chequeo y la accion habia una
+  # ventana en la que otro proceso podia cambiar todo bajo los pies.
+  lock_or_die
+
   case "$(state)" in
     authenticating) die "ya hay un login SAML en curso" ;;
     connected | connecting)
@@ -323,12 +356,13 @@ cmd_connect() {
   iface="$(profile_iface "$id")"
   [[ -n $server ]] || die "el perfil '$id' no tiene servidor"
 
-  install -d -m 700 "$RUNDIR"
+  ensure_rundir
   ensure_cookie_jar
   new_error_file
-  : > "$AUTH_MARKER"
+  printf '%s\n' "$$" > "$AUTH_MARKER"
   # El marker no puede sobrevivir a un login abortado o el widget queda colgado.
-  trap 'rm -f "$AUTH_MARKER"' EXIT
+  # Las senales van explicitas: con solo EXIT, un Ctrl-C lo dejaba atras.
+  trap 'rm -f "$AUTH_MARKER"' EXIT INT TERM HUP
 
   # -g autentica contra el gateway, -p contra el portal (el default de
   # gp-saml-gui). Sin flag de exec imprime HOST/USER/COOKIE/OS en stdout en vez
@@ -422,6 +456,7 @@ cmd_connect() {
 # --- desconectar ---------------------------------------------------------
 
 cmd_disconnect() {
+  lock_or_die
   rm -f "$AUTH_MARKER"
   systemctl stop "$UNIT" || die "no se pudo parar $UNIT"
   # `stop` no limpia el estado `failed`: sin esto, tras un arranque fallido el
