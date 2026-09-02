@@ -66,6 +66,9 @@ Item {
   property string addError: ""
 
   signal profileAdded(string id)
+  signal profileRemoved(string id)
+
+  readonly property bool removing: removeProcess.running
 
   property bool _userInitiatedStop: false
   property string _switchingTo: ""
@@ -251,6 +254,19 @@ Item {
     addProcess.running = true
   }
 
+  // Borrar es destructivo y el CLI no pregunta: quien llama tiene que haber
+  // confirmado antes. Tampoco desconecta, asi que el panel no ofrece borrar el
+  // perfil activo -hacerlo dejaria el tunel arriba apuntando a una config que
+  // ya no existe.
+  function removeProfile(id) {
+    if (removeProcess.running) return
+    var target = String(id || "")
+    if (target === "") return
+    removeProcess.targetId = target
+    removeProcess.command = ["gpvpn", "profile", "rm", target]
+    removeProcess.running = true
+  }
+
   function elide(text) {
     var value = String(text || "").replace(/\s+/g, " ").trim()
     return value.length > 160 ? value.substring(0, 157) + "…" : value
@@ -344,6 +360,22 @@ Item {
       }
       root.refresh()
       fastPoll.restart()
+    }
+  }
+
+  Process {
+    id: removeProcess
+    running: false
+    command: []
+    property string targetId: ""
+    stderr: StdioCollector { id: removeStderr; waitForEnd: true }
+    onExited: function (exitCode) {
+      if (exitCode === 0) {
+        root.profileRemoved(removeProcess.targetId)
+      } else {
+        root.setError(removeStderr.text || "No se pudo borrar el perfil")
+      }
+      root.refresh()
     }
   }
 

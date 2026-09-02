@@ -540,16 +540,31 @@ cmd_logs() {
 
 # --- perfiles (escritura) ------------------------------------------------
 
+# Compartidos entre add y edit, para que las dos rutas validen igual.
+valid_mode() {
+  case "$1" in gateway | portal) ;; *) die_as "$EX_USAGE" "--mode debe ser gateway o portal" ;; esac
+}
+valid_clientos() {
+  case "$1" in
+    linux | linux-64 | win | mac-intel | android | apple-ios) ;;
+    *) die_as "$EX_USAGE" "--clientos inválido: $1" ;;
+  esac
+}
+valid_iface() {
+  [[ $1 =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || die_as "$EX_USAGE" "nombre de interfaz inválido"
+}
+
 profile_usage() {
   cat <<'USAGE'
 uso: gpvpn profile <acción>
 
   add --id ID --server HOST [opciones]   Crea o reemplaza un perfil
+  edit --id ID [opciones]                 Cambia solo los campos que le pases
   rm ID                                   Borra un perfil
   default ID                              Marca el perfil por defecto
   list                                    Igual que `gpvpn list`
 
-opciones de add:
+opciones de add y edit:
   --name NOMBRE        Etiqueta visible (default: el id)
   --mode gateway|portal  Contra qué autentica gp-saml-gui (default: gateway)
   --gateway NOMBRE     Gateway a elegir cuando el modo es portal (--authgroup)
@@ -579,12 +594,9 @@ cmd_profile_add() {
   [[ -n $id ]] || die_as "$EX_USAGE" "falta --id"
   [[ -n $server ]] || die_as "$EX_USAGE" "falta --server"
   [[ $id =~ ^[a-zA-Z0-9_-]+$ ]] || die "el id solo admite letras, números, guion y guion bajo"
-  case "$mode" in gateway | portal) ;; *) die "--mode debe ser gateway o portal" ;; esac
-  case "$clientos" in
-    linux | linux-64 | win | mac-intel | android | apple-ios) ;;
-    *) die "--clientos inválido: $clientos" ;;
-  esac
-  [[ $iface =~ ^[a-zA-Z0-9_-]{1,15}$ ]] || die "nombre de interfaz inválido"
+  valid_mode "$mode"
+  valid_clientos "$clientos"
+  valid_iface "$iface"
 
   edit_profiles \
      --arg id "$id" --arg name "${name:-$id}" --arg server "$server" \
@@ -601,6 +613,48 @@ cmd_profile_add() {
      | .defaultProfile = (.defaultProfile // $id)
      '
   echo "Perfil '$id' guardado."
+}
+
+# add reemplaza el perfil entero; edit toca SOLO los campos que se le pasan.
+# Esa es la razon por la que el formulario del panel podia dar de alta pero no
+# editar: sin un merge no habia forma de cambiar un campo sin reescribir el
+# resto, y el formulario no pide todos.
+cmd_profile_edit() {
+  local id=""
+  local -a jqargs=() sets=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id)     id="$2"; shift 2 ;;
+      --name)   jqargs+=(--arg name "$2");   sets+=('.name = $name');     shift 2 ;;
+      --server) jqargs+=(--arg server "$2"); sets+=('.server = $server'); shift 2 ;;
+      --mode)   valid_mode "$2"; jqargs+=(--arg mode "$2"); sets+=('.mode = $mode'); shift 2 ;;
+      --gateway)
+        jqargs+=(--arg gateway "$2")
+        sets+=('.gateway = (if $gateway == "" then null else $gateway end)'); shift 2 ;;
+      --user)
+        jqargs+=(--arg user "$2")
+        sets+=('.user = (if $user == "" then null else $user end)'); shift 2 ;;
+      --clientos)
+        valid_clientos "$2"; jqargs+=(--arg clientos "$2")
+        sets+=('.clientos = $clientos'); shift 2 ;;
+      --interface)
+        valid_iface "$2"; jqargs+=(--arg iface "$2")
+        sets+=('.interface = $iface'); shift 2 ;;
+      -h | --help) profile_usage; return 0 ;;
+      *) die_as "$EX_USAGE" "opción desconocida: $1" ;;
+    esac
+  done
+
+  [[ -n $id ]] || die_as "$EX_USAGE" "falta --id"
+  profile_get "$id" >/dev/null 2>&1 || die "no existe el perfil '$id'"
+  [[ ${#sets[@]} -gt 0 ]] || die_as "$EX_USAGE" "no hay ningún campo que cambiar"
+
+  local body
+  body="$(printf '%s | ' "${sets[@]}")"
+  body="${body% | }"
+  edit_profiles --arg id "$id" "${jqargs[@]}" \
+    ".profiles = (.profiles | map(if .id == \$id then ($body) else . end))"
+  echo "Perfil '$id' actualizado."
 }
 
 cmd_profile_rm() {
@@ -625,6 +679,7 @@ cmd_profile_default() {
 cmd_profile() {
   case "${1-}" in
     add) shift; cmd_profile_add "$@" ;;
+    edit) shift; cmd_profile_edit "$@" ;;
     rm | remove) shift; cmd_profile_rm "$@" ;;
     default) shift; cmd_profile_default "$@" ;;
     list | "") cmd_list ;;

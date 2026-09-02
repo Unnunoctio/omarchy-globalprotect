@@ -17,6 +17,9 @@ Panel {
   property int profileIndex: 0
   property bool addingProfile: false
   property bool errorExpanded: false
+  // Fuente de verdad del dialogo de borrado: vacio = cerrado.
+  property string pendingRemovalId: ""
+  property string pendingRemovalName: ""
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -53,6 +56,31 @@ Panel {
     if (!p) return
     if (p.id === vpn.activeProfileId) vpn.disconnect()
     else vpn.connect(p.id)
+  }
+
+  // `gpvpn profile rm` no desconecta, asi que borrar el perfil activo dejaria el
+  // tunel arriba apuntando a una config que ya no existe. Hay que bajarlo antes.
+  function canRemove(p) {
+    return !!p && p.id !== vpn.activeProfileId && !vpn.removing
+  }
+
+  function askRemoveProfile(p) {
+    if (!canRemove(p)) return
+    pendingRemovalName = String(p.name || p.id)
+    pendingRemovalId = String(p.id)
+    // Arranca sobre Cancelar: la accion es destructiva y no tiene deshacer.
+    removeConfirm.selectedIndex = 0
+  }
+
+  function cancelRemoval() {
+    pendingRemovalId = ""
+    pendingRemovalName = ""
+  }
+
+  function confirmRemoval() {
+    var id = pendingRemovalId
+    cancelRemoval()
+    vpn.removeProfile(id)
   }
 
   function openAddForm() {
@@ -114,6 +142,7 @@ Panel {
     profileIndex = 0
     addingProfile = false
     errorExpanded = false
+    cancelRemoval()
     vpn.refresh()
     Qt.callLater(function () { keyCatcher.forceActiveFocus() })
   }
@@ -126,6 +155,10 @@ Panel {
   Connections {
     target: vpn
     function onProfileAdded(id) { root.closeAddForm() }
+    // Tras borrar, la lista se acorta: el cursor puede quedar fuera de rango.
+    function onProfileRemoved(id) {
+      root.profileIndex = Math.max(0, Math.min(root.profileIndex, vpn.profiles.length - 2))
+    }
   }
 
   IpcHandler {
@@ -204,19 +237,54 @@ Panel {
       // Mientras se escribe en el formulario las teclas son texto, no atajos.
       blocked: nameField.activeFocus || serverField.activeFocus
       onMoveRequested: function (dx, dy) {
+        if (root.pendingRemovalId !== "") {
+          if (dx !== 0) removeConfirm.selectedIndex = removeConfirm.selectedIndex === 0 ? 1 : 0
+          return
+        }
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dx, dy)
       }
-      onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: if (root.addingProfile) root.closeAddForm(); else root.close()
+      onActivateRequested: {
+        if (root.pendingRemovalId !== "") {
+          if (removeConfirm.selectedIndex === 0) root.cancelRemoval()
+          else root.confirmRemoval()
+          return
+        }
+        if (root.cursorActive) root.activateCursor()
+      }
+      onCloseRequested: {
+        if (root.pendingRemovalId !== "") root.cancelRemoval()
+        else if (root.addingProfile) root.closeAddForm()
+        else root.close()
+      }
+      onDeleteRequested: {
+        if (root.pendingRemovalId === "" && root.focusSection === "profiles") {
+          root.askRemoveProfile(root.selectedProfile())
+        }
+      }
       onTabRequested: function (direction) { root.switchPanel(direction) }
       onTextKey: function (t) {
+        if (root.pendingRemovalId !== "") return
         var key = String(t || "").toLowerCase()
         if (key === "t") root.toggleVpn()
         else if (key === "n") root.toggleAddForm()
         else if (key === "r") vpn.refresh()
         // `l` no llega hasta aca: PanelKeyCatcher lo gasta como flecha derecha.
         else if (key === "g") Quickshell.execDetached(["uwsm-app", "--", "foot", "-T", "GlobalProtect", "bash", "-c", "gpvpn logs -f"])
+      }
+
+      ConfirmDialog {
+        id: removeConfirm
+        anchors.fill: parent
+        z: 10
+        opened: root.pendingRemovalId !== ""
+        message: "¿Borrar el perfil «" + root.pendingRemovalName + "»?"
+        confirmText: "Borrar"
+        cancelText: "Cancelar"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onCanceled: root.cancelRemoval()
+        onConfirmed: root.confirmRemoval()
       }
 
       Flickable {
@@ -514,7 +582,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "n nuevo perfil · t conectar · r refrescar · g logs · esc cerrar"
+            text: "n nuevo · x borrar · t conectar · r refrescar · g logs · esc cerrar"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -634,6 +702,19 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         Layout.alignment: Qt.AlignVCenter
+      }
+
+      // Solo aparece con el cursor sobre la fila, para no cargar la lista. El
+      // perfil activo no lo ofrece: primero hay que desconectar.
+      PanelActionButton {
+        visible: profileRow.hasCursor && !profileRow.isActive
+        iconText: "󰩹"
+        tooltipText: "Borrar perfil"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        hasCursor: false
+        Layout.alignment: Qt.AlignVCenter
+        onClicked: root.askRemoveProfile(profileRow.profile)
       }
 
       // El switch de la fila manda sobre su propio perfil; la fila entera sigue
