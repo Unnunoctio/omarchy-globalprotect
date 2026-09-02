@@ -625,10 +625,24 @@ Panel {
             }
           }
 
+          // El backend es un paquete aparte, asi que puede faltar o estar
+          // desactualizado respecto de lo que este panel espera.
+          Text {
+            visible: vpn.cliOutdated
+            width: parent.width
+            text: "El backend gpvpn es anterior a " + vpn.minCliVersion
+                  + (vpn.cliVersion !== "" ? " (tenés " + vpn.cliVersion + ")" : "")
+                  + ".\nActualízalo: github.com/Unnunoctio/gpvpn"
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
           Text {
             visible: !vpn.installed
             width: parent.width
-            text: "No se encontró el CLI `gpvpn`.\nInstala el backend con: gpvpn setup"
+            text: "No se encontró el CLI `gpvpn`.\nInstálalo desde: github.com/Unnunoctio/gpvpn"
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall

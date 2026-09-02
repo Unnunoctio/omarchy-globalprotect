@@ -2,10 +2,17 @@
   "schemaVersion": 1,
   "id": "unnunoctio.globalprotect",
   "name": "GlobalProtect VPN",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "unnunoctio",
   "license": "MIT",
   "description": "Cliente GlobalProtect para la barra de Omarchy: conecta, desconecta y cambia de perfil, con estado en vivo y avisos de caida.",
+  "requires": {
+    "gpvpn": {
+      "minVersion": "1.2.0",
+      "url": "https://github.com/Unnunoctio/gpvpn",
+      "reason": "El widget no implementa VPN: invoca el CLI gpvpn por proceso."
+    }
+  },
   "kinds": [
     "bar-widget"
   ],

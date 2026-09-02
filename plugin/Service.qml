@@ -21,6 +21,16 @@ Item {
   readonly property int exitBadConfig: 6
   readonly property int exitNotFound: 127
 
+  // El CLI vive en su propio repo (github.com/Unnunoctio/gpvpn), asi que las
+  // dos partes pueden quedar desalineadas. `gpvpn --version` existe desde
+  // 1.2.0: una version anterior imprime el uso y sale con 0, o sea que "no pude
+  // leer una version" significa "es vieja", no "fallo el comando".
+  readonly property string minCliVersion: "1.2.0"
+  property string cliVersion: ""
+  property bool cliChecked: false
+  readonly property bool cliOutdated: cliChecked && installed
+                                      && !versionAtLeast(cliVersion, minCliVersion)
+
   property bool installed: false
   property string state: "unknown"   // connected | connecting | authenticating | disconnected | failed | unknown
   property string profileId: ""
@@ -127,6 +137,25 @@ Item {
     Quickshell.execDetached(["notify-send", "-a", "GlobalProtect VPN",
                              "-u", urgency || "normal",
                              "-i", "gpvpn", title, body || ""])
+  }
+
+  // Comparacion por componentes; lo que no parsea vale 0, asi que una cadena
+  // vacia queda por debajo de cualquier minimo.
+  function versionAtLeast(have, want) {
+    var a = String(have || "").split(".")
+    var b = String(want || "").split(".")
+    for (var i = 0; i < 3; i++) {
+      var x = parseInt(a[i], 10); if (isNaN(x)) x = 0
+      var y = parseInt(b[i], 10); if (isNaN(y)) y = 0
+      if (x !== y) return x > y
+    }
+    return true
+  }
+
+  function checkCliVersion() {
+    if (versionProcess.running) return
+    versionProcess.command = ["gpvpn", "--version"]
+    versionProcess.running = true
   }
 
   function refresh() {
@@ -311,7 +340,10 @@ Item {
     lastError = elide(lastErrorFull)
   }
 
-  Component.onCompleted: refresh()
+  Component.onCompleted: {
+    refresh()
+    checkCliVersion()
+  }
 
   Timer {
     interval: root.refreshIntervalSec * 1000
@@ -337,6 +369,19 @@ Item {
       }
     }
     onRunningChanged: if (running) ticks = 0
+  }
+
+  Process {
+    id: versionProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: versionStdout; waitForEnd: true }
+    onExited: function (exitCode) {
+      var out = String(versionStdout.text || "")
+      var m = /gpvpn[ \t]+([0-9]+\.[0-9]+\.[0-9]+)/.exec(out)
+      root.cliVersion = (exitCode === 0 && m) ? m[1] : ""
+      root.cliChecked = true
+    }
   }
 
   Process {
