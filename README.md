@@ -128,10 +128,24 @@ ciegas: hace falta un portal real contra el cual probarlo.
 ## Instalación
 
 ```bash
-./install.sh                 # construye, instala el paquete y copia el widget
+./install.sh                 # instala el árbol de trabajo y copia el widget
 omarchy plugin enable unnunoctio.globalprotect right
 gpvpn profile add --id trabajo --server vpn.empresa.com
 ```
+
+| Modo | Qué hace |
+|---|---|
+| `./install.sh` | Instala los archivos del árbol actual vía `pkexec`. Es el modo de iteración |
+| `./install.sh --plugin` | Solo re-copia el widget |
+| `./install.sh --package` | `makepkg` + `pacman -U`: construye el paquete del **tag publicado** |
+
+El `PKGBUILD` toma la fuente de un tag de git, que es lo que hace falta para que
+el paquete sea reproducible. Por eso `--package` construye la versión publicada
+y no lo que tengas editado — y por eso el modo por defecto instala directo.
+
+> Instalar directo deja los archivos divergiendo del paquete de pacman, cosa que
+> `pacman -Qkk gpvpn` reporta. Se normaliza con `./install.sh --package` una vez
+> que el tag existe.
 
 Instalando el widget solo por git (`omarchy plugin add`), el backend hay que
 ponerlo aparte, porque ese comando copia únicamente el QML:
@@ -139,8 +153,6 @@ ponerlo aparte, porque ese comando copia únicamente el QML:
 ```bash
 gpvpn setup      # instala unidad systemd y regla polkit vía pkexec
 ```
-
-Para iterar sobre el widget: `./install.sh --plugin`.
 
 > El shell recarga el QML al guardar, pero **no reinstancia** los widgets ya
 > montados en la barra: para ver cambios de estructura hace falta
