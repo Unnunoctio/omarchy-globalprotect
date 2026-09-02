@@ -11,6 +11,16 @@ Item {
 
   property var settings: ({})
 
+  // Codigos de salida de `gpvpn` (documentados en `gpvpn --help`). Antes
+  // cualquier codigo != 0 se leia como "no esta el CLI", asi que un
+  // profiles.json roto mostraba un mensaje falso y una negociacion lenta
+  // disparaba una notificacion de fallo.
+  readonly property int exitProgress: 3
+  readonly property int exitNoProfiles: 4
+  readonly property int exitNoBackend: 5
+  readonly property int exitBadConfig: 6
+  readonly property int exitNotFound: 127
+
   property bool installed: false
   property string state: "unknown"   // connected | connecting | authenticating | disconnected | failed | unknown
   property string profileId: ""
@@ -277,10 +287,24 @@ Item {
     onExited: function (exitCode) {
       if (exitCode === 0) {
         root.applyStatus(statusStdout.text || root._statusOutput)
-      } else {
+        return
+      }
+      root.state = "unknown"
+      // 127 lo pone el shell cuando el binario no existe; 5 lo pone el propio
+      // CLI cuando falta la unidad o el helper. Solo esos dos significan "no
+      // instalado": el resto son fallos de un CLI que si corrio.
+      if (exitCode === root.exitNotFound) {
         root.installed = false
-        root.state = "unknown"
-        root.lastError = "Falta el CLI gpvpn en el PATH"
+        root.lastError = "No se encontró el CLI gpvpn en el PATH"
+      } else if (exitCode === root.exitNoBackend) {
+        root.installed = false
+        root.lastError = "Falta el backend; instalalo con: gpvpn setup"
+      } else if (exitCode === root.exitBadConfig) {
+        root.installed = true
+        root.lastError = "El archivo de perfiles no es JSON válido"
+      } else {
+        root.installed = true
+        root.lastError = "gpvpn status falló (código " + exitCode + ")"
       }
     }
   }
@@ -291,13 +315,20 @@ Item {
     command: []
     stderr: StdioCollector { id: connectStderr; waitForEnd: true }
     onExited: function (exitCode) {
-      if (exitCode !== 0) {
-        root.lastError = root.elide(connectStderr.text || "No se pudo conectar")
+      if (exitCode === 0) {
+        root.actionStatus = ""
+      } else if (exitCode === root.exitProgress) {
+        // El CLI se canso de esperar, pero la unidad sigue viva y el tunel
+        // sigue negociando: no es un fallo. Se mantiene pendingProfile y el
+        // sondeo rapido, y no se notifica nada.
+        root.actionStatus = "El túnel sigue negociando…"
+      } else {
+        root.lastError = exitCode === root.exitNoProfiles
+                         ? "No hay perfiles configurados"
+                         : root.elide(connectStderr.text || "No se pudo conectar")
         root.actionStatus = ""
         root._switchingTo = ""
         root.notify("No se pudo conectar la VPN", root.lastError, "critical")
-      } else {
-        root.actionStatus = ""
       }
       root.refresh()
       fastPoll.restart()

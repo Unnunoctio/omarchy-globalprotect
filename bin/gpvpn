@@ -33,7 +33,17 @@ ERROR_FILE="$RUNDIR/last-error"
 
 DEFAULT_IFACE="gpvpn0"
 
-die() { printf 'gpvpn: %s\n' "$*" >&2; exit 1; }
+# Codigos de salida. El widget los usa para distinguir "el CLI no esta" de "el
+# CLI corrio y algo salio mal", que antes colapsaba todo en un mismo mensaje.
+EX_FAIL=1        # error generico
+EX_USAGE=2       # uso incorrecto
+EX_PROGRESS=3    # no es un error: la operacion sigue en curso
+EX_NOPROFILES=4  # no hay perfiles configurados
+EX_NOBACKEND=5   # falta la unidad systemd o el helper del tunel
+EX_BADCONFIG=6   # profiles.json ilegible
+
+die_as() { local code="$1"; shift; printf 'gpvpn: %s\n' "$*" >&2; exit "$code"; }
+die() { die_as "$EX_FAIL" "$@"; }
 
 # --- secretos ------------------------------------------------------------
 
@@ -97,6 +107,15 @@ ensure_profiles() {
 
 profiles_json() { ensure_profiles; cat "$PROFILES"; }
 
+# Un profiles.json corrupto hacia fallar el jq de cmd_status, y el widget leia
+# ese fallo generico como "falta el CLI en el PATH": un mensaje directamente
+# falso. Se valida antes, con un codigo propio.
+validate_profiles() {
+  ensure_profiles
+  jq -e . "$PROFILES" >/dev/null 2>&1 ||
+    die_as "$EX_BADCONFIG" "$PROFILES no es JSON valido"
+}
+
 # Reescribe profiles.json aplicandole un programa jq. Recibe los argumentos de
 # jq (el filtro y sus --arg) y le agrega el archivo.
 #
@@ -140,7 +159,8 @@ resolve_profile() {
   local id="${1-}"
   if [[ -z $id ]]; then
     id="$(default_profile_id)"
-    [[ -n $id ]] || die "no hay perfiles; crea uno con: gpvpn profile add --help"
+    [[ -n $id ]] ||
+      die_as "$EX_NOPROFILES" "no hay perfiles; crea uno con: gpvpn profile add --help"
   fi
   profile_get "$id" >/dev/null 2>&1 || die "no existe el perfil '$id'"
   printf '%s' "$id"
@@ -274,6 +294,7 @@ foreign_openconnect() {
 }
 
 cmd_status() {
+  validate_profiles
   local st iface ip since err id name
   st="$(state)"
   iface="$(current_iface)"
@@ -364,9 +385,9 @@ cmd_connect() {
     die "ya hay otro openconnect corriendo (pid $pid); baja esa VPN primero"
   fi
 
-  command -v gp-saml-gui >/dev/null || die "falta gp-saml-gui"
+  command -v gp-saml-gui >/dev/null || die_as "$EX_NOBACKEND" "falta gp-saml-gui"
   systemctl cat gpvpn@.service >/dev/null 2>&1 ||
-    die "falta la unidad systemd gpvpn@.service; corre: gpvpn setup"
+    die_as "$EX_NOBACKEND" "falta la unidad systemd gpvpn@.service; corre: gpvpn setup"
 
   local server mode gateway clientos iface
   server="$(profile_field "$id" server)"
@@ -460,18 +481,30 @@ cmd_connect() {
 
   # Espera a que la interfaz tenga IP para no reportar exito antes de tiempo.
   local i
-  for ((i = 0; i < 60; i++)); do
+  for ((i = 0; i < 120; i++)); do
     if [[ -n "$(iface_ip "$iface")" ]]; then
       echo "Conectado a $(profile_name "$id") ($iface $(iface_ip "$iface"))"
       return 0
     fi
+    # La unidad murio: eso si es un fallo, y se reporta como tal enseguida.
     if [[ "$(unit_state)" == failed ]]; then
-      break
+      dump_unit_log
+      die "el tunel fallo al levantar; revisa: gpvpn logs"
     fi
     sleep 0.5
   done
+
+  # Se agoto la espera pero la unidad sigue viva: es una negociacion lenta, no
+  # un fallo. Antes se moria con error dejando el tunel corriendo, asi que el
+  # widget disparaba una notificacion roja por una conexion que despues
+  # levantaba sola. Se sale con EX_PROGRESS y no se baja nada.
+  dump_unit_log
+  die_as "$EX_PROGRESS" "el tunel sigue negociando; mira: gpvpn status"
+}
+
+dump_unit_log() {
   journalctl -u "$UNIT" -n 20 --no-pager -o cat > "$ERROR_FILE" 2>/dev/null || true
-  die "el tunel no levanto; revisa: gpvpn logs"
+  redact_error_file
 }
 
 # --- desconectar ---------------------------------------------------------
@@ -539,12 +572,12 @@ cmd_profile_add() {
       --clientos) clientos="$2"; shift 2 ;;
       --interface) iface="$2"; shift 2 ;;
       -h | --help) profile_usage; return 0 ;;
-      *) die "opcion desconocida: $1" ;;
+      *) die_as "$EX_USAGE" "opcion desconocida: $1" ;;
     esac
   done
 
-  [[ -n $id ]] || die "falta --id"
-  [[ -n $server ]] || die "falta --server"
+  [[ -n $id ]] || die_as "$EX_USAGE" "falta --id"
+  [[ -n $server ]] || die_as "$EX_USAGE" "falta --server"
   [[ $id =~ ^[a-zA-Z0-9_-]+$ ]] || die "el id solo admite letras, numeros, guion y guion bajo"
   case "$mode" in gateway | portal) ;; *) die "--mode debe ser gateway o portal" ;; esac
   case "$clientos" in
@@ -572,7 +605,7 @@ cmd_profile_add() {
 
 cmd_profile_rm() {
   local id="${1-}"
-  [[ -n $id ]] || die "falta el id"
+  [[ -n $id ]] || die_as "$EX_USAGE" "falta el id"
   ensure_profiles
   profile_get "$id" >/dev/null 2>&1 || die "no existe el perfil '$id'"
   edit_profiles --arg id "$id" '
@@ -596,7 +629,7 @@ cmd_profile() {
     default) shift; cmd_profile_default "$@" ;;
     list | "") cmd_list ;;
     -h | --help) profile_usage ;;
-    *) profile_usage; exit 1 ;;
+    *) profile_usage; exit "$EX_USAGE" ;;
   esac
 }
 
@@ -641,6 +674,12 @@ uso: gpvpn <comando>
   setup                Instala unidad systemd y regla polkit (pide root)
 
 Perfiles en ~/.config/gpvpn/profiles.json
+
+Codigos de salida:
+  0  ok                     3  en curso (el tunel sigue negociando)
+  1  error                  4  no hay perfiles configurados
+  2  uso incorrecto         5  falta el backend (gpvpn setup)
+                            6  profiles.json ilegible
 USAGE
 }
 
@@ -654,5 +693,5 @@ case "${1-}" in
   logs) shift; cmd_logs "$@" ;;
   setup) shift; cmd_setup "${1-}" ;;
   -h | --help | help | "") usage ;;
-  *) usage; exit 1 ;;
+  *) usage; exit "$EX_USAGE" ;;
 esac
