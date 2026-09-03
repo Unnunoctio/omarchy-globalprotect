@@ -3,29 +3,29 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 
-// Estado de la VPN GlobalProtect. Todo el trabajo real lo hace el CLI `gpvpn`:
-// aca solo se poletea `gpvpn status --json`, se disparan connect/disconnect y
-// se avisa cuando el tunel cambia de estado.
+// GlobalProtect VPN state. All the real work is done by the `gpvpn` CLI: this
+// only polls `gpvpn status --json`, fires connect/disconnect, and notifies when
+// the tunnel changes state.
 Item {
   id: root
 
   property var settings: ({})
 
-  // Codigos de salida de `gpvpn` (documentados en `gpvpn --help`). Antes
-  // cualquier codigo != 0 se leia como "no esta el CLI", asi que un
-  // profiles.json roto mostraba un mensaje falso y una negociacion lenta
-  // disparaba una notificacion de fallo.
+  // `gpvpn` exit codes (documented in `gpvpn --help`). Any non-zero code used
+  // to be read as "the CLI is missing", so a broken profiles.json showed a
+  // message that was plainly false, and a slow negotiation fired a failure
+  // notification.
   readonly property int exitProgress: 3
   readonly property int exitNoProfiles: 4
   readonly property int exitNoBackend: 5
   readonly property int exitBadConfig: 6
   readonly property int exitNotFound: 127
 
-  // El CLI vive en su propio repo (github.com/Unnunoctio/gpvpn), asi que las
-  // dos partes pueden quedar desalineadas. `gpvpn --version` existe desde
-  // 1.2.0: una version anterior imprime el uso y sale con 0, o sea que "no pude
-  // leer una version" significa "es vieja", no "fallo el comando".
-  readonly property string minCliVersion: "1.2.0"
+  // The CLI lives in its own repo (github.com/Unnunoctio/gpvpn), so the two
+  // halves can drift apart. `gpvpn --version` exists from 0.1.0 on: anything
+  // older prints its usage and exits 0, which is why "I could not read a
+  // version" means "it is old", not "the command failed".
+  readonly property string minCliVersion: "0.1.0"
   property string cliVersion: ""
   property bool cliChecked: false
   readonly property bool cliOutdated: cliChecked && installed
@@ -41,26 +41,27 @@ Item {
   property string ip: ""
   property string since: ""
   property string lastError: ""
-  // El texto entero, aparte del elidido: un error de certificado o de HIP no
-  // entra en 160 caracteres y el detalle quedaba solo en los logs.
+  // The whole text, kept beside the elided one: a certificate or HIP error
+  // does not fit in 160 characters, and the detail only lived in the logs.
   property string lastErrorFull: ""
   readonly property bool errorTruncated: lastErrorFull.length > lastError.length
   property string actionStatus: ""
 
   readonly property bool connected: state === "connected"
   readonly property bool busyState: state === "connecting" || state === "authenticating"
-  // El switch se prende apenas arranca el login: la ventana SAML puede tardar y
-  // el usuario tiene que ver que su click hizo algo.
+  // The switch turns on as soon as the login starts: the SAML window can take a
+  // while, and the click has to visibly do something.
   readonly property bool active: connected || busyState
   readonly property bool busy: busyState || connectProcess.running || disconnectProcess.running
   readonly property bool hasProfiles: profiles.length > 0
-  // Cual perfil pinta como "encendido". Conectada es el que reporta el CLI;
-  // mientras negocia el CLI todavia no lo sabe, asi que vale el que pedimos.
+  // Which profile reads as "on". Once connected it is whatever the CLI
+  // reports; while negotiating the CLI does not know yet, so the requested one
+  // stands in.
   readonly property string activeProfileId: connected ? profileId : (busyState ? pendingProfile : "")
   readonly property bool saving: saveProcess.running
-  // Con `mode: gateway` el servidor ES el gateway. Con `mode: portal` el
-  // servidor es el portal y el gateway real es el authgroup, que es un campo
-  // aparte: mostrar el servidor como "Gateway" en ese caso era falso.
+  // With `mode: gateway` the server IS the gateway. With `mode: portal` the
+  // server is the portal and the real gateway is the authgroup, a separate
+  // field: labelling the server "Gateway" in that case was simply wrong.
   readonly property var targetProfileObj: profileById(targetProfile())
   readonly property string serverHost: targetProfileObj ? String(targetProfileObj.server || "") : ""
   readonly property string profileMode: targetProfileObj ? String(targetProfileObj.mode || "gateway") : "gateway"
@@ -69,9 +70,9 @@ Item {
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 300)
   readonly property bool notifyOnDisconnect: setting("notifyOnDisconnect", true) === true
 
-  // Distingue una caida del tunel de una desconexion pedida por el usuario:
-  // solo la primera merece una notificacion urgente. Un cambio de perfil baja y
-  // sube el tunel, y tampoco tiene que avisar de la bajada.
+  // Tells a dropped tunnel apart from a disconnect the user asked for: only the
+  // first deserves an urgent notification. Switching profiles takes the tunnel
+  // down and back up, and must not notify about the way down either.
   property string pendingProfile: ""
   property string saveError: ""
 
@@ -99,12 +100,12 @@ Item {
 
   function stateLabel() {
     switch (state) {
-      case "connected": return profileName !== "" ? profileName : "Conectada"
-      case "connecting": return "Levantando el túnel…"
-      case "authenticating": return "Esperando el login SAML…"
-      case "failed": return "Falló la conexión"
-      case "disconnected": return hasProfiles ? "Desconectada" : "Sin perfiles"
-      default: return "Sin datos"
+      case "connected": return profileName !== "" ? profileName : "Connected"
+      case "connecting": return "Bringing the tunnel up…"
+      case "authenticating": return "Waiting for the SAML login…"
+      case "failed": return "Connection failed"
+      case "disconnected": return hasProfiles ? "Disconnected" : "No profiles"
+      default: return "No data"
     }
   }
 
@@ -139,8 +140,8 @@ Item {
                              "-i", "gpvpn", title, body || ""])
   }
 
-  // Comparacion por componentes; lo que no parsea vale 0, asi que una cadena
-  // vacia queda por debajo de cualquier minimo.
+  // Component-wise comparison; anything that does not parse counts as 0, so an
+  // empty string falls below any minimum.
   function versionAtLeast(have, want) {
     var a = String(have || "").split(".")
     var b = String(want || "").split(".")
@@ -170,7 +171,7 @@ Item {
     try {
       parsed = JSON.parse(String(raw || ""))
     } catch (e) {
-      setError("No se pudo leer el estado de la VPN")
+      setError("Could not read the VPN state")
       return
     }
     installed = true
@@ -190,32 +191,32 @@ Item {
     if (next === state) return
     var previous = state
     state = next
-    if (previous === "" || previous === "unknown") return   // primer sondeo
+    if (previous === "" || previous === "unknown") return   // first poll
 
     if (next === "connected") {
       _userInitiatedStop = false
       _switchingTo = ""
       pendingProfile = ""
       actionStatus = ""
-      notify("VPN conectada", profileName + (ip !== "" ? " · " + ip : ""), "normal")
+      notify("VPN connected", profileName + (ip !== "" ? " · " + ip : ""), "normal")
     } else if (next === "failed") {
       _userInitiatedStop = false
       _switchingTo = ""
       pendingProfile = ""
-      notify("Falló la VPN", lastError !== "" ? lastError : "El túnel no pudo levantarse", "critical")
+      notify("VPN failed", lastError !== "" ? lastError : "The tunnel could not come up", "critical")
     } else if (next === "disconnected") {
       pendingProfile = ""
       if (previous !== "connected") return
       if (_userInitiatedStop || _switchingTo !== "") {
         _userInitiatedStop = false
       } else if (notifyOnDisconnect) {
-        notify("VPN desconectada", "El túnel se cayó", "critical")
+        notify("VPN disconnected", "The tunnel dropped", "critical")
       }
     }
   }
 
-  // Sin argumento usa el perfil por defecto; con uno cambia de perfil, que el
-  // CLI resuelve bajando y volviendo a subir el tunel.
+  // With no argument it uses the default profile; with one it switches
+  // profiles, which the CLI resolves by taking the tunnel down and back up.
   function connect(id) {
     if (connectProcess.running) return
     var target = String(id || targetProfile())
@@ -225,9 +226,9 @@ Item {
     pendingProfile = target
     setError("")
     var p = profileById(target)
-    actionStatus = "Abriendo el login SAML" + (p ? " de " + p.name : "") + "…"
-    // El estado optimista evita que el switch vuelva atras en el hueco entre el
-    // click y el primer sondeo que ya ve el marker de autenticacion.
+    actionStatus = "Opening the SAML login" + (p ? " for " + p.name : "") + "…"
+    // The optimistic state keeps the switch from snapping back in the gap
+    // between the click and the first poll that sees the auth marker.
     state = "authenticating"
     connectProcess.command = ["gpvpn", "connect", target]
     connectProcess.running = true
@@ -239,7 +240,7 @@ Item {
     _userInitiatedStop = true
     _switchingTo = ""
     pendingProfile = ""
-    actionStatus = "Bajando el túnel…"
+    actionStatus = "Taking the tunnel down…"
     disconnectProcess.command = ["gpvpn", "disconnect"]
     disconnectProcess.running = true
     fastPoll.restart()
@@ -251,27 +252,28 @@ Item {
     else connect("")
   }
 
-  // El id sale del nombre: el formulario del panel pide solo lo imprescindible
-  // y las opciones raras de `gpvpn profile add` quedan para el CLI.
+  // The id is derived from the name: the panel form asks only for the
+  // essentials, and the rarer `gpvpn profile add` options stay with the CLI.
   function slug(text) {
     return String(text || "").toLowerCase().trim()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
   }
 
-  // Alta y edicion por el mismo camino. Con editId vacio da de alta derivando
-  // el id del nombre; con editId usa `profile edit`, que hace merge y por eso
-  // permite guardar sin repetir los campos que el formulario no pide.
-  // La interfaz del tunel no se edita desde el panel: con un solo tunel a la
-  // vez nunca hay dos que puedan chocar, asi que renombrarla solo sirve para
-  // reglas de firewall fijadas al nombre. Queda en el JSON, y una edicion desde
-  // el panel no la toca.
+  // Create and edit share one path. With an empty editId it creates, deriving
+  // the id from the name; with an editId it uses `profile edit`, which merges
+  // and therefore allows saving without restating the fields the form omits.
+  //
+  // The tunnel interface is not editable from the panel: with a single tunnel at
+  // a time two of them can never collide, so renaming it only serves firewall
+  // rules pinned to the name. It stays in the JSON, and a panel edit leaves it
+  // untouched.
   function saveProfile(editId, name, server, mode, gateway, clientos) {
     if (saveProcess.running) return
     var label = String(name || "").trim()
     var host = String(server || "").trim()
     if (label === "" || host === "") {
-      saveError = "Hace falta un nombre y un servidor"
+      saveError = "A name and a server are required"
       return
     }
 
@@ -283,12 +285,12 @@ Item {
     } else {
       var id = slug(label)
       if (id === "") {
-        saveError = "El nombre no produce un id válido"
+        saveError = "That name yields no valid id"
         return
       }
-      // `profile add` reemplaza sin preguntar: un id repetido se frena aca.
+      // `profile add` replaces without asking: a duplicate id is stopped here.
       if (profileById(id)) {
-        saveError = "Ya hay un perfil con el id \u0027" + id + "\u0027"
+        saveError = "There is already a profile with the id \u0027" + id + "\u0027"
         return
       }
       args = ["gpvpn", "profile", "add", "--id", id]
@@ -297,8 +299,8 @@ Item {
 
     var wanted = String(mode || "gateway")
     args = args.concat(["--name", label, "--server", host, "--mode", wanted])
-    // El gateway solo aplica al modo portal: al salir de portal se limpia, para
-    // no dejar un --authgroup colgado que despues confunda.
+    // The gateway only applies to portal mode: leaving portal clears it, so no
+    // stale --authgroup is left behind to confuse things later.
     args = args.concat(["--gateway", wanted === "portal" ? String(gateway || "").trim() : ""])
     args = args.concat(["--clientos", String(clientos || "linux-64")])
 
@@ -315,10 +317,10 @@ Item {
     defaultProcess.running = true
   }
 
-  // Borrar es destructivo y el CLI no pregunta: quien llama tiene que haber
-  // confirmado antes. Tampoco desconecta, asi que el panel no ofrece borrar el
-  // perfil activo -hacerlo dejaria el tunel arriba apuntando a una config que
-  // ya no existe.
+  // Deleting is destructive and the CLI does not ask: the caller must have
+  // confirmed first. It does not disconnect either, which is why the panel does
+  // not offer to delete the active profile — doing so would leave the tunnel up
+  // pointing at a config that no longer exists.
   function removeProfile(id) {
     if (removeProcess.running) return
     var target = String(id || "")
@@ -333,8 +335,8 @@ Item {
     return value.length > 160 ? value.substring(0, 157) + "…" : value
   }
 
-  // Unico camino para fijar un error: guarda el texto entero y publica el
-  // recortado, para que los dos no se puedan desincronizar.
+  // The only way to set an error: it stores the whole text and publishes the
+  // trimmed one, so the two cannot drift apart.
   function setError(text) {
     lastErrorFull = String(text || "").replace(/\s+/g, " ").trim()
     lastError = elide(lastErrorFull)
@@ -352,8 +354,8 @@ Item {
     onTriggered: root.refresh()
   }
 
-  // Mientras algo esta en transicion conviene mirar mas seguido; se apaga sola
-  // cuando el estado se asienta.
+  // While something is in transition it pays to look more often; it turns
+  // itself off once the state settles.
   Timer {
     id: fastPoll
     interval: 1000
@@ -395,21 +397,21 @@ Item {
         return
       }
       root.state = "unknown"
-      // 127 lo pone el shell cuando el binario no existe; 5 lo pone el propio
-      // CLI cuando falta la unidad o el helper. Solo esos dos significan "no
-      // instalado": el resto son fallos de un CLI que si corrio.
+      // 127 comes from the shell when the binary is missing; 5 comes from the
+      // CLI itself when the unit or the helper is absent. Only those two mean
+      // "not installed": the rest are failures of a CLI that did run.
       if (exitCode === root.exitNotFound) {
         root.installed = false
-        root.setError("No se encontró el CLI gpvpn en el PATH")
+        root.setError("The gpvpn CLI was not found in PATH")
       } else if (exitCode === root.exitNoBackend) {
         root.installed = false
-        root.setError("Falta el backend; instálalo con: gpvpn setup")
+        root.setError("Backend missing; install it with: gpvpn setup")
       } else if (exitCode === root.exitBadConfig) {
         root.installed = true
-        root.setError("El archivo de perfiles no es JSON válido")
+        root.setError("The profiles file is not valid JSON")
       } else {
         root.installed = true
-        root.setError("gpvpn status falló (código " + exitCode + ")")
+        root.setError("gpvpn status failed (exit code " + exitCode + ")")
       }
     }
   }
@@ -423,17 +425,17 @@ Item {
       if (exitCode === 0) {
         root.actionStatus = ""
       } else if (exitCode === root.exitProgress) {
-        // El CLI se canso de esperar, pero la unidad sigue viva y el tunel
-        // sigue negociando: no es un fallo. Se mantiene pendingProfile y el
-        // sondeo rapido, y no se notifica nada.
-        root.actionStatus = "El túnel sigue negociando…"
+        // The CLI gave up waiting, but the unit is still alive and the tunnel
+        // is still negotiating: this is not a failure. pendingProfile and the
+        // fast poll are kept, and nothing is notified.
+        root.actionStatus = "The tunnel is still negotiating…"
       } else {
         root.setError(exitCode === root.exitNoProfiles
-                      ? "No hay perfiles configurados"
-                      : (connectStderr.text || "No se pudo conectar"))
+                      ? "No profiles configured"
+                      : (connectStderr.text || "Could not connect"))
         root.actionStatus = ""
         root._switchingTo = ""
-        root.notify("No se pudo conectar la VPN", root.lastError, "critical")
+        root.notify("Could not connect the VPN", root.lastError, "critical")
       }
       root.refresh()
       fastPoll.restart()
@@ -450,7 +452,7 @@ Item {
       if (exitCode === 0) {
         root.profileRemoved(removeProcess.targetId)
       } else {
-        root.setError(removeStderr.text || "No se pudo borrar el perfil")
+        root.setError(removeStderr.text || "Could not delete the profile")
       }
       root.refresh()
     }
@@ -467,7 +469,7 @@ Item {
         root.saveError = ""
         root.profileSaved(saveProcess.savedId)
       } else {
-        root.saveError = root.elide(saveStderr.text || "No se pudo guardar el perfil")
+        root.saveError = root.elide(saveStderr.text || "Could not save the profile")
       }
       root.refresh()
     }
@@ -480,7 +482,7 @@ Item {
     stderr: StdioCollector { id: defaultStderr; waitForEnd: true }
     onExited: function (exitCode) {
       if (exitCode !== 0) {
-        root.setError(defaultStderr.text || "No se pudo marcar el perfil por defecto")
+        root.setError(defaultStderr.text || "Could not set the default profile")
       }
       root.refresh()
     }
@@ -494,7 +496,7 @@ Item {
     onExited: function (exitCode) {
       if (exitCode !== 0) {
         root._userInitiatedStop = false
-        root.setError(disconnectStderr.text || "No se pudo desconectar")
+        root.setError(disconnectStderr.text || "Could not disconnect")
       }
       root.actionStatus = ""
       root.refresh()

@@ -17,10 +17,10 @@ Panel {
   property int profileIndex: 0
   property bool addingProfile: false
   property bool errorExpanded: false
-  // Fuente de verdad del dialogo de borrado: vacio = cerrado.
+  // Source of truth for the delete dialog: empty means closed.
   property string pendingRemovalId: ""
   property string pendingRemovalName: ""
-  // Vacio = el formulario da de alta; con un id = edita ese perfil.
+  // Empty means the form creates; with an id it edits that profile.
   property string editingId: ""
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -52,16 +52,18 @@ Panel {
     return vpn.profiles[Math.max(0, Math.min(profileIndex, vpn.profiles.length - 1))]
   }
 
-  // Cada fila enciende o apaga su propio perfil: sobre el que ya esta arriba
-  // desconecta, sobre otro cambia (el CLI baja y vuelve a subir el tunel).
+  // Each row turns its own profile on or off: on the one already up it
+  // disconnects, on another it switches (the CLI drops and re-raises the
+  // tunnel).
   function toggleProfile(p) {
     if (!p) return
     if (p.id === vpn.activeProfileId) vpn.disconnect()
     else vpn.connect(p.id)
   }
 
-  // `gpvpn profile rm` no desconecta, asi que borrar el perfil activo dejaria el
-  // tunel arriba apuntando a una config que ya no existe. Hay que bajarlo antes.
+  // `gpvpn profile rm` does not disconnect, so deleting the active profile
+  // would leave the tunnel up pointing at a config that no longer exists. It has
+  // to be taken down first.
   function canRemove(p) {
     return !!p && p.id !== vpn.activeProfileId && !vpn.removing
   }
@@ -70,7 +72,7 @@ Panel {
     if (!canRemove(p)) return
     pendingRemovalName = String(p.name || p.id)
     pendingRemovalId = String(p.id)
-    // Arranca sobre Cancelar: la accion es destructiva y no tiene deshacer.
+    // Starts on Cancel: the action is destructive and has no undo.
     removeConfirm.selectedIndex = 0
   }
 
@@ -145,7 +147,7 @@ Panel {
   }
 
   function activateCursor() {
-    // El control del header dejo de ser el switch: ahora da de alta un perfil.
+    // The header control is no longer the switch: it now creates a profile.
     if (focusSection === "header") {
       toggleAddForm()
       return
@@ -175,7 +177,7 @@ Panel {
   Connections {
     target: vpn
     function onProfileSaved(id) { root.closeAddForm() }
-    // Tras borrar, la lista se acorta: el cursor puede quedar fuera de rango.
+    // After a delete the list shrinks: the cursor can fall out of range.
     function onProfileRemoved(id) {
       root.profileIndex = Math.max(0, Math.min(root.profileIndex, vpn.profiles.length - 2))
     }
@@ -198,20 +200,20 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    // Lo que antes obligaba a abrir el panel para verlo. BarIconButton extiende
-    // WidgetButton, que ya resuelve el tooltip contra la barra.
+    // What used to require opening the panel just to see it. BarIconButton
+    // extends WidgetButton, which already resolves the tooltip against the bar.
     tooltipText: {
-      if (!vpn.installed) return "GlobalProtect · backend no disponible"
+      if (!vpn.installed) return "GlobalProtect · backend unavailable"
       if (vpn.state === "connected") {
         var parts = [vpn.profileName !== "" ? vpn.profileName : "Conectada"]
         if (vpn.ip !== "") parts.push(vpn.ip)
         if (uptime.text !== "") parts.push("hace " + uptime.text)
         return parts.join(" · ")
       }
-      if (vpn.state === "connecting") return "GlobalProtect · levantando el túnel…"
-      if (vpn.state === "authenticating") return "GlobalProtect · esperando el login SAML…"
-      if (vpn.state === "failed") return "GlobalProtect · falló la conexión"
-      return vpn.hasProfiles ? "GlobalProtect · desconectada" : "GlobalProtect · sin perfiles"
+      if (vpn.state === "connecting") return "GlobalProtect · bringing the tunnel up…"
+      if (vpn.state === "authenticating") return "GlobalProtect · waiting for the SAML login…"
+      if (vpn.state === "failed") return "GlobalProtect · connection failed"
+      return vpn.hasProfiles ? "GlobalProtect · disconnected" : "GlobalProtect · no profiles"
     }
     iconComponent: Component {
       Item {
@@ -223,8 +225,8 @@ Panel {
           holeColor: root.bar ? root.bar.background : Color.background
           opacity: vpn.busyState ? 0.55 : 1.0
 
-          // Latido mientras negocia: el escudo hueco solo no alcanza para
-          // distinguir "conectando" de "desconectada".
+          // A pulse while negotiating: the hollow shield alone is not enough to
+          // tell "connecting" from "disconnected".
           SequentialAnimation on opacity {
             running: vpn.busyState
             loops: Animation.Infinite
@@ -254,7 +256,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      // Mientras se escribe en el formulario las teclas son texto, no atajos.
+      // While typing in the form, keys are text rather than shortcuts.
       blocked: nameField.activeFocus || serverField.activeFocus
                || gatewayField.activeFocus || clientosDropdown.popupOpen
       onMoveRequested: function (dx, dy) {
@@ -301,9 +303,9 @@ Panel {
         anchors.fill: parent
         z: 10
         opened: root.pendingRemovalId !== ""
-        message: "¿Borrar el perfil «" + root.pendingRemovalName + "»?"
-        confirmText: "Borrar"
-        cancelText: "Cancelar"
+        message: "Delete the profile \u00AB" + root.pendingRemovalName + "\u00BB?"
+        confirmText: "Delete"
+        cancelText: "Cancel"
         foreground: root.foreground
         fontFamily: root.fontFamily
         onCanceled: root.cancelRemoval()
@@ -330,8 +332,8 @@ Panel {
             id: header
             width: parent.width
             implicitHeight: hero.implicitHeight
-            // Lo lee el trailingControl del hero, cuyo `root` resuelve a
-            // PanelHero y no a este Panel.
+            // Read by the hero's trailingControl, whose `root` resolves to
+            // PanelHero rather than to this Panel.
             readonly property bool ringVisible: root.headerHasCursor
             readonly property bool formOpen: root.addingProfile
             function focusHero() { root.setHeaderCursor() }
@@ -358,7 +360,7 @@ Panel {
                   visible: vpn.installed
                   bordered: true
                   iconText: header.formOpen ? "󰅖" : "󰐕"
-                  tooltipText: header.formOpen ? "Cancelar" : "Agregar perfil"
+                  tooltipText: header.formOpen ? "Cancel" : "Add profile"
                   foreground: hero.foreground
                   fontFamily: hero.fontFamily
                   hasCursor: header.ringVisible
@@ -384,11 +386,11 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
-            // Un error de certificado o de HIP no entra en 160 caracteres, y el
-            // detalle quedaba solo en `g` -> logs.
+            // A certificate or HIP error does not fit in 160 characters, and the
+            // detail only lived behind `g` -> logs.
             Text {
               visible: vpn.actionStatus === "" && vpn.errorTruncated
-              text: root.errorExpanded ? "ver menos" : "ver más"
+              text: root.errorExpanded ? "show less" : "show more"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -414,17 +416,17 @@ Panel {
             width: parent.width
             spacing: Style.spacing.labelGap
 
-            // Con modo portal se muestran los dos: el portal contra el que se
-            // autentica y el gateway que se eligio dentro de el.
+            // In portal mode both are shown: the portal being authenticated
+            // against, and the gateway picked inside it.
             InfoPair {
               visible: vpn.serverHost !== ""
-              label: vpn.profileMode === "portal" ? "Portal" : "Servidor"
+              label: vpn.profileMode === "portal" ? "Portal" : "Server"
               value: vpn.serverHost
             }
             InfoPair {
               visible: vpn.profileMode === "portal"
               label: "Gateway"
-              value: vpn.gatewayName !== "" ? vpn.gatewayName : "automático"
+              value: vpn.gatewayName !== "" ? vpn.gatewayName : "automatic"
             }
             InfoPair { label: "Interfaz"; value: vpn.interfaceName }
             InfoPair {
@@ -434,7 +436,7 @@ Panel {
             }
             InfoPair {
               visible: uptime.text !== ""
-              label: "Conectada hace"
+              label: "Up for"
               value: uptime.text
             }
           }
@@ -451,17 +453,17 @@ Panel {
             spacing: Style.space(8)
 
             PanelSectionHeader {
-              text: root.editingId !== "" ? "EDITAR PERFIL" : "NUEVO PERFIL"
+              text: root.editingId !== "" ? "EDIT PROFILE" : "NEW PROFILE"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
 
             FormRow {
-              label: "Nombre"
+              label: "Name"
               TextField {
                 id: nameField
                 Layout.fillWidth: true
-                placeholderText: "Trabajo"
+                placeholderText: "Work"
                 foreground: root.foreground
                 font.pixelSize: Style.font.bodySmall
                 verticalPadding: Style.space(4)
@@ -471,11 +473,11 @@ Panel {
             }
 
             FormRow {
-              label: "Servidor"
+              label: "Server"
               TextField {
                 id: serverField
                 Layout.fillWidth: true
-                placeholderText: "vpn.empresa.com"
+                placeholderText: "vpn.company.com"
                 foreground: root.foreground
                 font.pixelSize: Style.font.bodySmall
                 verticalPadding: Style.space(4)
@@ -486,7 +488,7 @@ Panel {
             }
 
             FormRow {
-              label: "Modo"
+              label: "Mode"
               ButtonGroup {
                 id: modeGroup
                 Layout.fillWidth: true
@@ -500,15 +502,15 @@ Panel {
               }
             }
 
-            // Solo aplica autenticando contra un portal: es el --authgroup de
-            // openconnect, el mismo desplegable del cliente oficial.
+            // Only applies when authenticating against a portal: it is
+            // openconnect's --authgroup, the official client's dropdown.
             FormRow {
               visible: modeGroup.value === "portal"
               label: "Gateway"
               TextField {
                 id: gatewayField
                 Layout.fillWidth: true
-                placeholderText: "el que elija el portal"
+                placeholderText: "whichever the portal picks"
                 foreground: root.foreground
                 font.pixelSize: Style.font.bodySmall
                 verticalPadding: Style.space(4)
@@ -518,7 +520,7 @@ Panel {
             }
 
             FormRow {
-              label: "Sistema"
+              label: "System"
               Dropdown {
                 id: clientosDropdown
                 Layout.fillWidth: true
@@ -547,7 +549,7 @@ Panel {
 
               Text {
                 Layout.fillWidth: true
-                text: root.editingId !== "" ? "el id no cambia al editar" : "el id sale del nombre"
+                text: root.editingId !== "" ? "the id does not change when editing" : "the id comes from the name"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -555,7 +557,7 @@ Panel {
               }
 
               Button {
-                text: "Cancelar"
+                text: "Cancel"
                 bordered: true
                 foreground: root.foreground
                 fontFamily: root.fontFamily
@@ -568,7 +570,7 @@ Panel {
                 readonly property bool ready: nameField.text.trim() !== ""
                                               && serverField.text.trim() !== ""
                                               && !vpn.saving
-                text: vpn.saving ? "Guardando…" : "Guardar"
+                text: vpn.saving ? "Saving…" : "Save"
                 bordered: true
                 selected: ready
                 opacity: ready ? 1.0 : 0.45
@@ -591,7 +593,7 @@ Panel {
             spacing: Style.space(10)
 
             PanelSectionHeader {
-              text: "PERFILES"
+              text: "PROFILES"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -599,7 +601,7 @@ Panel {
             Text {
               visible: !vpn.hasProfiles
               width: parent.width
-              text: "No hay perfiles configurados.\nAgrega uno con el botón + de arriba."
+              text: "No profiles configured.\nAdd one with the + button above."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -625,14 +627,14 @@ Panel {
             }
           }
 
-          // El backend es un paquete aparte, asi que puede faltar o estar
-          // desactualizado respecto de lo que este panel espera.
+          // The backend is a separate package, so it can be missing or older
+          // than what this panel expects.
           Text {
             visible: vpn.cliOutdated
             width: parent.width
-            text: "El backend gpvpn es anterior a " + vpn.minCliVersion
-                  + (vpn.cliVersion !== "" ? " (tenés " + vpn.cliVersion + ")" : "")
-                  + ".\nActualízalo: github.com/Unnunoctio/gpvpn"
+            text: "The gpvpn backend is older than " + vpn.minCliVersion
+                  + (vpn.cliVersion !== "" ? " (you have " + vpn.cliVersion + ")" : "")
+                  + ".\nUpdate it: github.com/Unnunoctio/gpvpn"
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -642,7 +644,7 @@ Panel {
           Text {
             visible: !vpn.installed
             width: parent.width
-            text: "No se encontró el CLI `gpvpn`.\nInstálalo desde: github.com/Unnunoctio/gpvpn"
+            text: "The `gpvpn` CLI was not found.\nInstall it from: github.com/Unnunoctio/gpvpn"
             color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -651,7 +653,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "n nuevo · e editar · x borrar · d default · t conectar · r refrescar · g logs · esc"
+            text: "n new · e edit · x delete · d default · t connect · r refresh · g logs · esc"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -663,15 +665,15 @@ Panel {
     }
   }
 
-  // El uptime se calcula desde el timestamp de la unidad, asi que hay que
-  // repintarlo aunque el estado no cambie.
+  // Uptime is computed from the unit's timestamp, so it has to be repainted
+  // even when the state does not change.
   QtObject {
     id: uptime
     property string text: ""
   }
 
-  // Corre siempre que haya tunel, no solo con el panel abierto: el tooltip de
-  // la barra tambien muestra el uptime.
+  // Runs whenever there is a tunnel, not only with the panel open: the bar
+  // tooltip shows the uptime too.
   Timer {
     interval: 1000
     running: vpn.connected
@@ -680,8 +682,8 @@ Panel {
     onTriggered: uptime.text = vpn.uptimeText()
   }
 
-  // Etiqueta a la izquierda, control a la derecha: el hijo que le pasen es el
-  // control y se estira solo.
+  // Label on the left, control on the right: whatever child is passed in is the
+  // control, and it stretches on its own.
   component FormRow: RowLayout {
     id: formRow
     property string label: ""
@@ -765,7 +767,7 @@ Panel {
       }
 
       Text {
-        // Cede el lugar a los botones cuando el cursor esta sobre la fila.
+        // Yields its place to the buttons while the cursor is on the row.
         visible: profileRow.isDefault && !profileRow.isActive && !profileRow.hasCursor
         text: "default"
         color: root.dim
@@ -774,12 +776,12 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
       }
 
-      // Los tres aparecen solo con el cursor sobre la fila, para no cargar la
-      // lista con acciones que casi nunca se usan.
+      // All three appear only with the cursor on the row, to keep the list from
+      // being crowded with actions that are almost never used.
       PanelActionButton {
         visible: profileRow.hasCursor && !profileRow.isDefault
         iconText: "󰐃"
-        tooltipText: "Marcar por defecto"
+        tooltipText: "Set as default"
         foreground: root.foreground
         fontFamily: root.fontFamily
         hasCursor: false
@@ -790,7 +792,7 @@ Panel {
       PanelActionButton {
         visible: profileRow.hasCursor
         iconText: "󰏫"
-        tooltipText: "Editar perfil"
+        tooltipText: "Edit profile"
         foreground: root.foreground
         fontFamily: root.fontFamily
         hasCursor: false
@@ -798,11 +800,11 @@ Panel {
         onClicked: root.openEditForm(profileRow.profile)
       }
 
-      // El perfil activo no ofrece borrado: primero hay que desconectar.
+      // The active profile offers no delete: disconnect first.
       PanelActionButton {
         visible: profileRow.hasCursor && !profileRow.isActive
         iconText: "󰩹"
-        tooltipText: "Borrar perfil"
+        tooltipText: "Delete profile"
         foreground: root.foreground
         fontFamily: root.fontFamily
         hasCursor: false
@@ -810,8 +812,8 @@ Panel {
         onClicked: root.askRemoveProfile(profileRow.profile)
       }
 
-      // El switch de la fila manda sobre su propio perfil; la fila entera sigue
-      // siendo clickeable, pero el switch se come el click cuando cae encima.
+      // The row's switch governs its own profile; the whole row stays
+      // clickable, but the switch eats the click when it lands on it.
       ToggleSwitch {
         id: profileSwitch
         Layout.alignment: Qt.AlignVCenter

@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
-# Copia el widget al directorio de plugins del shell de Omarchy.
+# Copies the widget into the Omarchy shell's plugin directory.
 #
 #   ./install.sh
 #
-# El backend es un paquete aparte: https://github.com/Unnunoctio/gpvpn
-# Este widget no lo instala ni lo administra; solo lo invoca.
+# The backend is a separate package: https://github.com/Unnunoctio/gpvpn
+# This widget neither installs nor manages it; it only drives it.
 
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
 PLUGIN_ID="unnunoctio.globalprotect"
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
-MIN_CLI="1.2.0"
+MIN_CLI="0.1.0"
 
-# --plugin queda aceptado por costumbre: antes distinguia el widget del backend,
-# y ahora este repo es solo el widget.
+# --plugin is still accepted out of habit: it used to tell the widget apart from
+# the backend, and this repo is now only the widget.
 case "${1-}" in
   "" | --plugin) ;;
-  *) echo "uso: $0 [--plugin]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--plugin]" >&2; exit 2 ;;
 esac
 
-# El validador de Omarchy rechaza symlinks dentro de un plugin, asi que se
-# copia; esta es la unica direccion valida, plugin/ manda.
+# Omarchy's validator rejects symlinks inside a plugin, so this copies; plugin/
+# is the source of truth and the only valid direction.
 mkdir -p "$PLUGIN_DIR"
 rsync -a --delete plugin/ "$PLUGIN_DIR/"
 omarchy plugin validate "$PLUGIN_DIR"
-echo "Widget copiado a $PLUGIN_DIR"
+echo "Widget copied to $PLUGIN_DIR"
 echo
 
 if ! command -v gpvpn >/dev/null; then
-  echo "Falta el backend: instalalo desde https://github.com/Unnunoctio/gpvpn"
+  echo "Backend missing: install it from https://github.com/Unnunoctio/gpvpn"
 elif ! version="$(gpvpn --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')" || [[ -z $version ]]; then
-  # gpvpn --version existe desde 1.2.0: si no imprime una version, es anterior.
-  echo "El backend es anterior a $MIN_CLI; actualizalo o el panel va a fallar en cosas puntuales"
+  # gpvpn --version exists from 0.1.0 on: if it prints no version, it is older.
+  echo "Backend is older than $MIN_CLI; update it or parts of the panel will misbehave"
 else
-  echo "Backend: gpvpn $version (se necesita >= $MIN_CLI)"
+  echo "Backend: gpvpn $version (needs >= $MIN_CLI)"
 fi
-echo "Agrega el widget con: omarchy plugin enable $PLUGIN_ID right"
+echo "Add the widget with: omarchy plugin enable $PLUGIN_ID right"

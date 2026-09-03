@@ -1,97 +1,121 @@
-# GlobalProtect VPN para la barra de Omarchy
+# omarchy-globalprotect — GlobalProtect for the Omarchy bar
 
-Indicador para la barra: conectar, desconectar y cambiar de perfil de una VPN
-GlobalProtect sin abrir una terminal, con estado en vivo y aviso cuando el túnel
-se cae.
+A bar indicator for a GlobalProtect VPN: connect, disconnect and switch profiles
+without opening a terminal, with live state and a notification when the tunnel
+drops.
 
-## Requiere el backend
+## Requires the backend
 
-Este repo es **solo el widget**. Todo el trabajo real —el login SAML, el túnel,
-la unidad systemd, la regla polkit— lo hace el CLI `gpvpn`, que vive aparte:
+This repo is **only the widget**. Every bit of real work — the SAML login, the
+tunnel, the systemd unit, the polkit rule — is done by the `gpvpn` CLI, which
+lives on its own:
 
-**[Unnunoctio/gpvpn](https://github.com/Unnunoctio/gpvpn)**, versión mínima `1.2.0`.
+**[Unnunoctio/gpvpn](https://github.com/Unnunoctio/gpvpn)**, version `0.1.0` or newer.
 
-El widget no implementa nada de VPN, ni toca systemd, ni lee archivos del
-backend. Habla con el CLI **por proceso**: `gpvpn status --json` para el estado,
-y los subcomandos para actuar. El esquema de ese JSON está documentado en el
-README del backend, y es el contrato entre los dos.
+The widget implements no VPN logic, touches no systemd, and reads none of the
+backend's files. It talks to the CLI **by process**: `gpvpn status --json` for
+state, and the subcommands to act. That JSON schema is documented in the
+backend's README and is the contract between the two.
 
-Si `gpvpn` falta o es anterior a la versión mínima, el panel lo dice en vez de
-fallar de formas raras.
+If `gpvpn` is missing or older than the minimum, the panel says so instead of
+failing in strange ways.
 
-## Instalación
+## Installation
 
 ```bash
 ./install.sh
 omarchy plugin enable unnunoctio.globalprotect right
 ```
 
-`install.sh` copia el QML y avisa si el backend falta o está desactualizado.
-También se puede instalar solo por git, que copia únicamente el QML:
+`install.sh` copies the QML and reports whether the backend is missing or out of
+date. The widget can also be installed straight from git, which copies only the
+QML:
 
 ```bash
 omarchy plugin add https://github.com/Unnunoctio/omarchy-globalprotect
 ```
 
-> El shell recarga el QML al guardar, pero **no reinstancia** los widgets ya
-> montados en la barra: para ver cambios de estructura hace falta
-> `omarchy restart shell`.
+> The shell reloads QML on save but does **not** re-instantiate widgets already
+> mounted in the bar. Structural changes need `omarchy restart shell`.
 
-## Qué hace
+## What it does
 
-- Click izquierdo abre el panel, click derecho conecta/desconecta, click del
-  medio refresca. El tooltip del escudo muestra perfil, IP y hace cuánto está
-  arriba, sin abrir nada.
-- Cada perfil tiene su propio switch: encenderlo sobre el perfil activo baja el
-  túnel, encenderlo sobre otro cambia de perfil. El punto lleno marca el activo.
-  El switch se enciende apenas se pide la conexión, no recién cuando el túnel
-  está arriba.
-- El `+` del encabezado da de alta un perfil, y el lápiz de cada fila lo abre en
-  modo edición con los campos cargados. El formulario cubre nombre, servidor,
-  modo, gateway (solo en modo portal) y sistema.
-- Cada fila permite además marcarla por defecto y borrarla, con confirmación. El
-  perfil conectado no ofrece borrado: hay que bajarlo primero.
-- Conectada, el panel muestra servidor —o portal y gateway—, interfaz, IP y hace
-  cuánto está arriba.
-- El escudo de la barra va relleno con la VPN arriba, en contorno tenue abajo, y
-  late mientras negocia.
-- Atajos: `j`/`k` o flechas para moverte, `enter` para activar, `n` nuevo
-  perfil, `e` editar, `d` marcar por defecto, `x` borrar, `t`
-  conectar/desconectar, `r` refrescar, `g` logs, `esc` cerrar.
-  (`h`/`j`/`k`/`l` los consume el navegador de teclado del panel como flechas,
-  por eso los logs están en `g`.)
-- Avisa al conectar, al fallar, y cuando el túnel se cae solo. Una desconexión
-  pedida por vos, o un cambio de perfil, no generan aviso. Una negociación lenta
-  tampoco: el backend la reporta como "en curso", no como fallo.
-- Opciones en `shell.json`: `refreshIntervalSec` (default 15) y
-  `notifyOnDisconnect`.
+- **Bar icon.** The shield is filled while the VPN is up, a faint outline when it
+  is down, and pulses while negotiating. Hovering shows profile, IP and uptime
+  without opening anything.
+- **Mouse.** Left click opens the panel, right click connects or disconnects,
+  middle click refreshes.
+- **One switch per profile.** Flipping the active profile's switch takes the
+  tunnel down; flipping another one switches to it. The filled dot marks the
+  active profile. The switch turns on as soon as the connection is requested,
+  not only once the tunnel is up.
+- **Profile management.** `+` in the header creates a profile; the pencil on each
+  row opens it for editing, preloaded. Each row can also be set as default or
+  deleted, with confirmation. The connected profile offers no delete — take it
+  down first.
+- **Connection details.** While connected the panel shows server (or portal and
+  gateway, in portal mode), interface, IP and how long it has been up.
+- **Notifications** on connect, on failure, and when the tunnel drops by itself.
+  A disconnect you asked for, or a profile switch, stays quiet. So does a slow
+  negotiation: the backend reports that as *in progress*, not as a failure.
 
-## Qué NO hace el widget
+## Keyboard
 
-Estas cosas viven en el backend, a propósito:
-
-| | Dónde |
+| Key | Action |
 |---|---|
-| `interface` y `extraArgs` de un perfil | `~/.config/gpvpn/profiles.json` o `gpvpn profile edit` |
-| Instalar la unidad systemd y la regla polkit | `gpvpn setup`, o el paquete |
-| Cualquier cosa que necesite root | La unidad `gpvpn@<uid>`, vía polkit |
+| `j` / `k`, arrows | Move the cursor |
+| `enter` | Activate the row under the cursor |
+| `n` | New profile |
+| `e` | Edit the profile under the cursor |
+| `d` | Set it as default |
+| `x` | Delete it, with confirmation |
+| `t` | Connect / disconnect |
+| `r` | Refresh |
+| `g` | Open the tunnel logs |
+| `esc` | Close the form, the dialog, or the panel |
 
-El formulario del panel cubre lo que se cambia seguido; el resto es un campo de
-escape que no merece ocupar una fila.
+`h`/`j`/`k`/`l` are consumed by the panel's keyboard navigator as arrows, which
+is why the logs live on `g`.
 
-## Componentes
+## Settings
 
-| Archivo | Qué hace |
+In `shell.json`, under the widget's entry:
+
+| Key | Default | What it does |
+|---|---|---|
+| `refreshIntervalSec` | `15` | How often the panel polls `gpvpn status` |
+| `notifyOnDisconnect` | `true` | Notify when the tunnel drops on its own |
+
+## What the widget deliberately does not do
+
+These live in the backend, on purpose:
+
+| | Where |
 |---|---|
-| `plugin/Panel.qml` | El widget de barra y el panel: filas, formulario, diálogos, teclado |
-| `plugin/Service.qml` | Estado y acciones: poletea el CLI, decide cuándo notificar |
-| `plugin/ShieldIcon.qml` | El escudo, dibujado como `Shape` (los SVG chicos rinden mal en la barra) |
-| `plugin/manifest.json` | Metadata del plugin y la dependencia declarada del backend |
+| A profile's `interface` and `extraArgs` | `~/.config/gpvpn/profiles.json`, or `gpvpn profile edit` |
+| Installing the systemd unit and polkit rule | `gpvpn setup`, or the package |
+| Anything that needs root | The `gpvpn@<uid>` unit, via polkit |
 
-## Requisitos
+The panel's form covers what gets changed often; the rest is an escape hatch that
+does not deserve a row.
 
-Omarchy con su shell Quickshell, y [`gpvpn`](https://github.com/Unnunoctio/gpvpn)
-`>= 1.2.0`.
+## Components
 
-Opcionales: `libnotify` para los avisos de escritorio, `foot` para el atajo de
-logs. Los usa el widget, no el backend.
+| File | What it does |
+|---|---|
+| `plugin/Panel.qml` | The bar widget and the panel: rows, form, dialogs, keyboard |
+| `plugin/Service.qml` | State and actions: polls the CLI, decides when to notify |
+| `plugin/ShieldIcon.qml` | The shield, drawn as a `Shape` (small SVGs render poorly in the bar) |
+| `plugin/manifest.json` | Plugin metadata and the declared backend dependency |
+
+## Requirements
+
+Omarchy with its Quickshell shell, and
+[`gpvpn`](https://github.com/Unnunoctio/gpvpn) `>= 0.1.0`.
+
+Optional: `libnotify` for desktop notifications, `foot` for the logs shortcut.
+Both are used by the widget, not by the backend.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

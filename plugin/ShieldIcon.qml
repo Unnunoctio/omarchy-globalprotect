@@ -2,19 +2,19 @@ import QtQuick
 import QtQuick.Shapes
 import qs.Commons
 
-// Escudo con ojo de cerradura, el mismo motivo del icono .desktop. Se dibuja
-// como Shape en vez de cargar el SVG porque los SVG chicos rinden mal en la
-// barra. Todo se define en un espacio fijo de 64x64 y se escala de una.
+// Shield with a keyhole, the same motif as the app icon. Drawn as a Shape
+// rather than loading the SVG because small SVGs render poorly in the bar.
+// Everything is defined in a fixed 64x64 space and scaled in one go.
 Item {
   id: root
 
   property real iconSize: Style.font.icon
   property color color: Color.foreground
-  // Escudo solido cuando el tunel esta arriba, contorno cuando no: el estado
-  // se lee de un vistazo aun sin distinguir el matiz del color.
+  // Solid shield while the tunnel is up, outline when it is not: the state
+  // reads at a glance even without telling the colours apart.
   property bool filled: true
-  // Con que se pinta la cerradura cuando el escudo esta relleno; el llamador
-  // pasa el fondo sobre el que apoya el icono para que se lea como calado.
+  // What the keyhole is painted with while the shield is filled; the caller
+  // passes the background the icon sits on so it reads as cut out.
   property color holeColor: Color.background
 
   readonly property color keyholeColor: filled ? holeColor : color
@@ -45,7 +45,7 @@ Item {
       }
     }
 
-    // Cerradura: arco del grillete, cuerpo y ojo.
+    // Lock: shackle arc, body and keyhole.
     Shape {
       x: 22
       y: 21

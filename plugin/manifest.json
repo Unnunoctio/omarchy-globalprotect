@@ -2,15 +2,15 @@
   "schemaVersion": 1,
   "id": "unnunoctio.globalprotect",
   "name": "GlobalProtect VPN",
-  "version": "1.2.0",
+  "version": "0.1.0",
   "author": "unnunoctio",
   "license": "MIT",
-  "description": "Cliente GlobalProtect para la barra de Omarchy: conecta, desconecta y cambia de perfil, con estado en vivo y avisos de caida.",
+  "description": "GlobalProtect client for the Omarchy bar: connect, disconnect and switch profiles, with live state and drop notifications.",
   "requires": {
     "gpvpn": {
-      "minVersion": "1.2.0",
+      "minVersion": "0.1.0",
       "url": "https://github.com/Unnunoctio/gpvpn",
-      "reason": "El widget no implementa VPN: invoca el CLI gpvpn por proceso."
+      "reason": "The widget implements no VPN logic: it drives the gpvpn CLI by process."
     }
   },
   "kinds": [
@@ -21,7 +21,7 @@
   },
   "barWidget": {
     "displayName": "GlobalProtect VPN",
-    "description": "Estado de la VPN GlobalProtect; click izquierdo abre el panel, click derecho conecta o desconecta.",
+    "description": "GlobalProtect VPN state; left click opens the panel, right click connects or disconnects.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -33,7 +33,7 @@
       {
         "key": "refreshIntervalSec",
         "type": "integer",
-        "label": "Intervalo de refresco (segundos)",
+        "label": "Refresh interval (seconds)",
         "min": 5,
         "max": 300,
         "step": 5,
@@ -42,7 +42,7 @@
       {
         "key": "notifyOnDisconnect",
         "type": "boolean",
-        "label": "Avisar cuando la VPN se cae",
+        "label": "Notify when the VPN drops",
         "defaultValue": true
       }
     ]
